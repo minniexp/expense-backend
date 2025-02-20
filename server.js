@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
+const validateSecretKey = require('./middleware/authMiddleware');
 require('dotenv').config();
 
 const app = express();
@@ -23,6 +24,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 app.use(express.json());
+
+// Apply secret key validation middleware
+app.use(validateSecretKey);
 
 // Connect Database
 connectDB();
