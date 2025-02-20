@@ -10,10 +10,10 @@
     {
       "src": "/(.*)",
       "dest": "server.js",
-      "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      "methods": ["GET"],
       "headers": {
         "Access-Control-Allow-Origin": "https://expense-frontend-eosin.vercel.app",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Methods": "GET",
         "Access-Control-Allow-Headers": "X-Requested-With, Content-Type, Accept, Authorization",
         "Access-Control-Allow-Credentials": "true"
       }

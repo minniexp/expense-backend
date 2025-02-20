@@ -170,8 +170,8 @@ const getReturnIdForMonth = (month) => {
 };
 
 exports.getTellerTransactions = async (req, res) => {
-    accessToken = process.env.TELLER_ACCESS_TOKEN;
   try {
+    accessToken = process.env.TELLER_ACCESS_TOKEN;
     if (!accessToken) {
       return res.status(400).json({ 
         error: 'No access token available. Please connect a bank account first.' 
@@ -196,7 +196,7 @@ exports.getTellerTransactions = async (req, res) => {
     // Get transactions for each card
     for (const [cardName, accountId] of Object.entries(cardMapping)) {
       const transactionsResponse = await fetch(
-        `https://api.teller.io/accounts/${accountId}/transactions?count=100`, // Add limit of 100
+        `https://api.teller.io/accounts/${accountId}/transactions?count=100`,
         {
           method: 'GET',
           agent,
@@ -213,34 +213,29 @@ exports.getTellerTransactions = async (req, res) => {
       }
 
       const transactions = await transactionsResponse.json();
-
       
-      // Format transactions and filter out 2024 dates and specific descriptions
+      // Format transactions and filter
       const formattedTransactions = transactions
         .filter(transaction => {
-          // First filter: Check if transaction is from 2025
           const is2025 = transaction.date.startsWith('2025');
-          
-          // Second filter: Check if description includes any of the excluded phrases
           const excludedPhrases = [
             'Payment to Chase card ending in',
+            'PAYMENT TO CHASE CARD ENDING IN',
             'Payment Thank You-Mobile',
+            'PAYMENT-THANK YOU',
             'Online Transfer'
           ];
-          
           const shouldExclude = excludedPhrases.some(phrase => 
             transaction.description.includes(phrase)
           );
-
-          // Return true only if it's 2025 AND not in excluded descriptions
           return is2025 && !shouldExclude;
         })
-        .map(async transaction => {
+        .map(transaction => {
           const [year, month, day] = transaction.date.split('-').map(Number);
           const purchaseCategories = determinePurchaseCategory(transaction);
           const category = determineCategory(transaction);
           const isParentsMonthly = category === 'parents-monthly';
-          
+
           return {
             userId: process.env.MONGODB_USERID,
             tellerTransactionId: transaction.id,
@@ -262,18 +257,7 @@ exports.getTellerTransactions = async (req, res) => {
           };
         });
 
-      // Since map with async functions returns promises, we need to wait for all of them
-      const resolvedTransactions = await Promise.all(formattedTransactions);
-      allTransactions.push(...resolvedTransactions);
-
-      // Save to database
-      for (const transaction of resolvedTransactions) {
-        await Transaction.findOneAndUpdate(
-          { tellerTransactionId: transaction.tellerTransactionId },
-          transaction,
-          { upsert: true, new: true }
-        );
-      }
+      allTransactions.push(...formattedTransactions);
     }
 
     // Sort all transactions by date
@@ -281,6 +265,7 @@ exports.getTellerTransactions = async (req, res) => {
 
     console.log(`Retrieved ${allTransactions.length} total transactions`);
     
+    // Just return the formatted transactions without saving to MongoDB
     res.json(allTransactions);
   } catch (error) {
     console.error('Error in getAllTransactions:', error);

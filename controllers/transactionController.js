@@ -50,17 +50,39 @@ exports.getMonthTransactions = async (req, res) => {
 
 exports.createTransaction = async (req, res) => {
   try {
-    const transaction = new Transaction(req.body);
+    // Add default userId if not provided
+    const transactionData = req.body[0];
+    transactionData.userId = transactionData.userId ||process.env.MONGODB_USERID;
+
+    // Validate required fields
+    const requiredFields = ['transactionType', 'amount', 'date', 'day', 'month'];
+    const missingFields = requiredFields.filter(field => !transactionData[field]);
+
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+        requiredFields: missingFields
+      });
+    }
+
+    const transaction = new Transaction(transactionData);
     const savedTransaction = await transaction.save();
     res.status(201).json(savedTransaction);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    console.error('Error creating transaction:', err);
+    res.status(400).json({ 
+      message: err.message,
+      details: err.errors ? Object.keys(err.errors).map(key => ({
+        field: key,
+        message: err.errors[key].message
+      })) : null
+    });
   }
 };
 
 exports.createBulkTransactions = async (req, res) => {
   try {
-    const transactions = req.body;
+    const transactions = req.body[0];
     console.log("createBulkTransactions: ", transactions);
 
     if (!Array.isArray(transactions)) {
@@ -148,5 +170,93 @@ exports.deleteAllTransactions = async (req, res) => {
   } catch (err) {
     console.error('Error deleting transactions:', err);
     res.status(500).json({ message: err.message });
+  }
+};
+
+exports.updateTransactionsMany = async (req, res) => {
+  try {
+    const transactions = req.body;
+
+    if (!Array.isArray(transactions)) {
+      return res.status(400).json({ 
+        message: 'Request body must be an array of transactions' 
+      });
+    }
+
+    const results = {
+      successful: [],
+      failed: []
+    };
+
+    // Process each transaction update
+    await Promise.all(transactions.map(async (transaction) => {
+      try {
+        // Check if _id exists
+        if (!transaction._id) {
+          results.failed.push({
+            transaction,
+            error: 'Missing MongoDB ID (_id)'
+          });
+          return;
+        }
+
+        // Check if transaction exists in database
+        const existingTransaction = await Transaction.findById(transaction._id);
+        
+        if (!existingTransaction) {
+          results.failed.push({
+            transaction,
+            error: `Transaction with ID ${transaction._id} not found`
+          });
+          return;
+        }
+
+        // Update the transaction
+        const updatedTransaction = await Transaction.findByIdAndUpdate(
+          transaction._id,
+          {
+            userId: transaction.userId || process.env.MONGODB_USERID,
+            tellerTransactionId: transaction.tellerTransactionId,
+            year: transaction.year,
+            month: transaction.month,
+            day: transaction.day,
+            date: transaction.date,
+            description: transaction.description,
+            amount: transaction.amount,
+            category: transaction.category,
+            purchaseCategory: transaction.purchaseCategory,
+            paymentMethod: transaction.paymentMethod,
+            points: transaction.points,
+            transactionType: transaction.transactionType,
+            returnId: transaction.returnId,
+            returned: transaction.returned,
+            needToBePaidback: transaction.needToBePaidback,
+            notes: transaction.notes
+          },
+          { new: true, runValidators: true }
+        );
+
+        results.successful.push(updatedTransaction);
+      } catch (error) {
+        results.failed.push({
+          transaction,
+          error: error.message
+        });
+      }
+    }));
+
+    // Return results
+    res.json({
+      message: `Updated ${results.successful.length} transactions, ${results.failed.length} failed`,
+      successful: results.successful,
+      failed: results.failed
+    });
+
+  } catch (error) {
+    console.error('Error in updateTransactionsMany:', error);
+    res.status(500).json({ 
+      message: 'Error updating transactions',
+      error: error.message 
+    });
   }
 };

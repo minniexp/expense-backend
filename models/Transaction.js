@@ -57,6 +57,8 @@ const transactionSchema = new mongoose.Schema({
       'automobile',
       'korea',
       'business',
+      'misc',
+      'payroll',
       ''
     ],
     required: false
