@@ -3,6 +3,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
+const PendingTransactions = require('../models/PendingTransactions');
 
 // Store access token temporarily (should be in database for production)
 // let accessToken = 'test_token_rgtjiblbxhhto';
@@ -36,7 +37,6 @@ exports.handleAccessToken = async (req, res) => {
   try {
     const { accessToken: token } = req.body;
     accessToken = token;
-    console.log('Access Token stored:', accessToken);
     res.json({ success: true });
   } catch (err) {
     console.error('Error handling access token:', err);
@@ -178,6 +178,18 @@ exports.getTellerTransactions = async (req, res) => {
       });
     }
 
+    // Fetch pending transaction document
+    const pendingTransactionDoc = await PendingTransactions.findById(process.env.PENDING_TRANSACTIONS_ID);
+    if (!pendingTransactionDoc) {
+      return res.status(404).json({ 
+        error: 'Pending transaction document not found' 
+      });
+    }
+
+    const { lastTellerTransactionId, lastDate } = pendingTransactionDoc;
+    console.log('Last processed date:', lastDate);
+    console.log('Last transaction ID:', lastTellerTransactionId);
+
     // Define card mapping with card names as keys
     const cardMapping = {
       'Amazon Visa': process.env.AMAZON_VISA_ID,
@@ -189,8 +201,6 @@ exports.getTellerTransactions = async (req, res) => {
     };
 
     const agent = new https.Agent(getTellerConfig());
-
-    // Initialize a single array for all transactions
     const allTransactions = [];
 
     // Get transactions for each card
@@ -217,7 +227,13 @@ exports.getTellerTransactions = async (req, res) => {
       // Format transactions and filter
       const formattedTransactions = transactions
         .filter(transaction => {
+          // Filter out transactions older than lastDate
+          const transactionDate = new Date(transaction.date);
+          const lastProcessedDate = new Date(lastDate);
+          
           const is2025 = transaction.date.startsWith('2025');
+          const isNewerThanLastDate = transactionDate > lastProcessedDate;
+          
           const excludedPhrases = [
             'Payment to Chase card ending in',
             'PAYMENT TO CHASE CARD ENDING IN',
@@ -228,7 +244,8 @@ exports.getTellerTransactions = async (req, res) => {
           const shouldExclude = excludedPhrases.some(phrase => 
             transaction.description.includes(phrase)
           );
-          return is2025 && !shouldExclude;
+          
+          return is2025 && isNewerThanLastDate && !shouldExclude;
         })
         .map(transaction => {
           const [year, month, day] = transaction.date.split('-').map(Number);
@@ -263,9 +280,26 @@ exports.getTellerTransactions = async (req, res) => {
     // Sort all transactions by date
     allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    console.log(`Retrieved ${allTransactions.length} total transactions`);
+    // Update the pending transaction document with the newest transaction date
+    if (allTransactions.length > 0) {
+      const newestTransactionDate = allTransactions[0].date;
+      
+      await PendingTransactions.findByIdAndUpdate(
+        process.env.PENDING_TRANSACTIONS_ID,
+        { 
+          lastDate: newestTransactionDate,
+          lastTellerTransactionId: allTransactions[0].tellerTransactionId
+        },
+        { new: true }
+      );
+
+      console.log('Updated lastDate to:', newestTransactionDate);
+    }
+
+    console.log(`Retrieved ${allTransactions.length} total transactions after filtering`);
+    console.log('Newest transaction date:', allTransactions[0]?.date);
+    console.log('Oldest transaction date:', allTransactions[allTransactions.length - 1]?.date);
     
-    // Just return the formatted transactions without saving to MongoDB
     res.json(allTransactions);
   } catch (error) {
     console.error('Error in getAllTransactions:', error);
