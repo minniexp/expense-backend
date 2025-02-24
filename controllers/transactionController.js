@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Transaction = require('../models/Transaction');
 const Return = require('../models/Return');
+const PendingTransactions = require('../models/PendingTransactions');
 
 const getReturnIdForMonth = (month) => {
   const monthMap = {
@@ -82,8 +83,7 @@ exports.createTransaction = async (req, res) => {
 
 exports.createBulkTransactions = async (req, res) => {
   try {
-    const transactions = req.body[0];
-    console.log("createBulkTransactions: ", transactions);
+    const transactions = req.body;
 
     if (!Array.isArray(transactions)) {
       return res.status(400).json({ 
@@ -100,7 +100,7 @@ exports.createBulkTransactions = async (req, res) => {
 
       if (existingTransaction) {
         console.log(`Transaction ${transaction.tellerTransactionId} already exists, skipping...`);
-        return null; // Skip this transaction
+        return null;
       }
 
       const isParentsMonthly = transaction.category === 'parents-monthly';
@@ -124,7 +124,7 @@ exports.createBulkTransactions = async (req, res) => {
           }
         }
       }
-
+      
       return {
         userId: transaction.userId || process.env.MONGODB_MOMID,
         tellerTransactionId: transaction.tellerTransactionId,
@@ -154,6 +154,31 @@ exports.createBulkTransactions = async (req, res) => {
     }
 
     const savedTransactions = await Transaction.insertMany(newTransactions);
+
+    // After successfully creating new transactions, update PendingTransactions
+    if (savedTransactions.length > 0) {
+      // Sort transactions by date to get the newest and oldest
+      const sortedTransactions = savedTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+      const newestTransaction = sortedTransactions[0];
+      const oldestTransaction = sortedTransactions[sortedTransactions.length - 1];
+
+      // Log transaction date ranges
+      console.log('Creating transactions with date range:');
+      console.log('Newest transaction date:', newestTransaction.date);
+      console.log('Oldest transaction date:', oldestTransaction.date);
+
+      // Update PendingTransactions
+      await PendingTransactions.findByIdAndUpdate(
+        process.env.PENDING_TRANSACTIONS_ID,
+        { 
+          lastDate: newestTransaction.date,
+          lastTellerTransactionId: newestTransaction.tellerTransactionId
+        },
+        { new: true }
+      );
+
+      console.log('Updated PendingTransactions lastDate to:', newestTransaction.date);
+    }
     
     console.log(`Successfully created ${savedTransactions.length} new transactions`);
     res.status(201).json(savedTransactions);

@@ -279,26 +279,6 @@ exports.getTellerTransactions = async (req, res) => {
 
     // Sort all transactions by date
     allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-    // Update the pending transaction document with the newest transaction date
-    if (allTransactions.length > 0) {
-      const newestTransactionDate = allTransactions[0].date;
-      
-      await PendingTransactions.findByIdAndUpdate(
-        process.env.PENDING_TRANSACTIONS_ID,
-        { 
-          lastDate: newestTransactionDate,
-          lastTellerTransactionId: allTransactions[0].tellerTransactionId
-        },
-        { new: true }
-      );
-
-      console.log('Updated lastDate to:', newestTransactionDate);
-    }
-
-    console.log(`Retrieved ${allTransactions.length} total transactions after filtering`);
-    console.log('Newest transaction date:', allTransactions[0]?.date);
-    console.log('Oldest transaction date:', allTransactions[allTransactions.length - 1]?.date);
     
     res.json(allTransactions);
   } catch (error) {
