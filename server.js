@@ -9,6 +9,7 @@ const app = express();
 // Parse FRONTEND_URL into array of allowed origins
 const allowedOrigins = [
   process.env.FRONTEND_URL,
+  process.env.FRONTED_URL_SECONDARY,
   'http://localhost:3000'  // Keep localhost for development
 ];
 
