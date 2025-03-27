@@ -23,9 +23,39 @@ const getReturnIdForMonth = (month) => {
 
 exports.getTransactions = async (req, res) => {
   try {
-    const transactions = await Transaction.find().sort({ date: -1 });
-    res.json(transactions);
+    const transactions = await Transaction.find()
+      .sort({ date: -1 });
+
+    // Collect all unique return IDs from transactions
+    const returnIds = [...new Set(
+      transactions
+        .map(t => t.returnId)
+        .filter(id => id && id !== 'pending')
+    )];
+
+    // Fetch all referenced return documents in one query
+    const returnDocs = returnIds.length > 0
+      ? await Return.find({ _id: { $in: returnIds } }, 'description')
+      : [];
+
+    // Create a map of return IDs to return descriptions
+    const returnMap = returnDocs.reduce((map, ret) => {
+      map[ret._id.toString()] = ret.description || 'No description';
+      return map;
+    }, {});
+
+    // Enhance transactions with return descriptions
+    const enhancedTransactions = transactions.map(t => {
+      const transaction = t.toObject();
+      if (transaction.returnId && returnMap[transaction.returnId]) {
+        transaction.returnDescription = returnMap[transaction.returnId];
+      }
+      return transaction;
+    });
+
+    res.json(enhancedTransactions);
   } catch (err) {
+    console.error('Error getting transactions:', err);
     res.status(500).json({ message: err.message });
   }
 };
@@ -85,6 +115,8 @@ exports.createBulkTransactions = async (req, res) => {
   try {
     const transactions = req.body;
 
+    console.log('createBulkTransactions transactions', transactions);
+
     if (!Array.isArray(transactions)) {
       return res.status(400).json({ 
         message: 'Request body must be an array of transactions' 
@@ -104,27 +136,9 @@ exports.createBulkTransactions = async (req, res) => {
       }
 
       const isParentsMonthly = transaction.category === 'parents-monthly';
-      const returnId = isParentsMonthly ? getReturnIdForMonth(transaction.month) : null;
+      const returnId = isParentsMonthly ? getReturnIdForMonth(transaction.month) : transaction.returnId;
 
-      // If parents-monthly, update the return document
-      if (isParentsMonthly && returnId) {
-        const returnDoc = await Return.findById(returnId);
-        if (returnDoc) {
-          if (transaction.transactionType === 'expense') {
-            const currentTotal = Number(returnDoc.total) || 0;
-            const transactionAmount = Number(transaction.amount);
-            
-            if (!isNaN(transactionAmount)) {
-              returnDoc.total = currentTotal + transactionAmount;
-              returnDoc.returnedTransactionIds.push(transaction.tellerTransactionId);
-              await returnDoc.save();
-            } else {
-              console.error(`Invalid transaction amount for ID: ${transaction.tellerTransactionId}`);
-            }
-          }
-        }
-      }
-      
+      // Prepare the transaction object for insertion
       return {
         userId: transaction.userId || process.env.MONGODB_MOMID,
         tellerTransactionId: transaction.tellerTransactionId,
@@ -153,7 +167,52 @@ exports.createBulkTransactions = async (req, res) => {
       return res.json({ message: 'No new transactions to save' });
     }
 
+    // Save the processed transactions to MongoDB
     const savedTransactions = await Transaction.insertMany(newTransactions);
+
+    // After saving transactions, update return documents
+    await Promise.all(savedTransactions.map(async (savedTransaction, index) => {
+      const returnId = savedTransaction.returnId;
+      
+      // If returnId exists, update the return document
+      if (returnId) {
+        try {
+          const returnDoc = await Return.findById(returnId);
+          
+          if (returnDoc) {
+            console.log(`Updating Return document ${returnId} with transaction ${savedTransaction._id}`);
+            
+            // Add MongoDB _id to returnedTransactionIds
+            if (!returnDoc.returnedTransactionIds.includes(savedTransaction._id.toString())) {
+              returnDoc.returnedTransactionIds.push(savedTransaction._id.toString());
+            }
+            
+            // Add tellerTransactionId to returnedTellerTransactionIds
+            if (savedTransaction.tellerTransactionId && 
+                !returnDoc.returnedTellerTransactionIds.includes(savedTransaction.tellerTransactionId)) {
+              returnDoc.returnedTellerTransactionIds.push(savedTransaction.tellerTransactionId);
+            }
+            
+            // If it's an expense, also update the total amount
+            if (savedTransaction.transactionType === 'expense') {
+              const currentTotal = Number(returnDoc.total) || 0;
+              const transactionAmount = Number(savedTransaction.amount);
+              
+              if (!isNaN(transactionAmount)) {
+                returnDoc.total = currentTotal + transactionAmount;
+              }
+            }
+            
+            await returnDoc.save();
+            console.log(`Successfully updated Return document ${returnId}`);
+          } else {
+            console.log(`Return document ${returnId} not found`);
+          }
+        } catch (error) {
+          console.error(`Error updating Return document ${returnId}:`, error);
+        }
+      }
+    }));
 
     // After successfully creating new transactions, update PendingTransactions
     if (savedTransactions.length > 0) {
@@ -283,5 +342,24 @@ exports.updateTransactionsMany = async (req, res) => {
       message: 'Error updating transactions',
       error: error.message 
     });
+  }
+};
+
+exports.getTransactionsByIds = async (req, res) => {
+  try {
+    const { ids } = req.body;
+    
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'Invalid or empty transaction IDs array' });
+    }
+    
+    const transactions = await Transaction.find({
+      _id: { $in: ids }
+    }).sort({ date: -1 });
+    
+    res.json(transactions);
+  } catch (err) {
+    console.error('Error fetching transactions by IDs:', err);
+    res.status(500).json({ message: err.message });
   }
 };

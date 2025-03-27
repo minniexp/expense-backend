@@ -8,5 +8,6 @@ router.post('/', transactionController.createBulkTransactions);
 router.delete('/all', transactionController.deleteAllTransactions);
 router.put('/update-many', transactionController.updateTransactionsMany);
 router.post('/single', transactionController.createTransaction);
+router.post('/by-ids', transactionController.getTransactionsByIds);
 
 module.exports = router;

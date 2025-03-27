@@ -25,6 +25,10 @@ const returnSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  returnedTellerTransactionIds: {
+    type: [String],
+    default: []
+  },
   paidBackConfirmationPayee: {
     type: Boolean,
     default: false
