@@ -28,6 +28,7 @@ exports.createUser = async (req, res) => {
 
 // Fetch user by email
 exports.fetchUserByEmail = async (req, res) => {
+  console.log("fetchUserByEmail called")
   try {
     const { email } = req.body;
     if (!email) {
