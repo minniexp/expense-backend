@@ -12,9 +12,26 @@ const userSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  googleId: {
+    type: String,
+    unique: true,
+    sparse: true // Allows for null values if not all users have a Google ID
+  },
+  isApproved: {
+    type: Boolean,
+    default: false
+  },
+  lastLogin: {
+    type: Date
+  },
+  accessLevel: {
+    type: String,
+    enum: ['simple', 'advanced'],
+    default: 'simple'
   }
 }, {
-  timestamps: true
+  timestamps: true // Automatically adds createdAt and updatedAt fields
 });
 
 module.exports = mongoose.model('User', userSchema); 

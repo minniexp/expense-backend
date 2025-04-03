@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
-const validateSecretKey = require('./middleware/authMiddleware');
+const { validateToken, requireAdvancedAccess, validateSecretKey } = require('./middleware/authMiddleware');
 require('dotenv').config();
 
 const app = express();
@@ -24,9 +24,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 app.use(express.json());
-
-// Apply secret key validation middleware
-app.use(validateSecretKey);
 
 // Connect Database
 connectDB();
@@ -83,12 +80,16 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Routes
-app.use('/api/transactions', require('./routes/transactions'));
-app.use('/api/teller', require('./routes/teller'));
+// Authentication routes (no token validation)
 app.use('/api/users', require('./routes/users'));
-app.use('/api/returns', require('./routes/returns'));
-app.use('/api/pending-transactions', require('./routes/pendingTransactions'));
+
+// Protected routes - require token validation
+app.use('/api/transactions', validateToken, require('./routes/transactions'));
+app.use('/api/teller', validateToken, require('./routes/teller'));
+app.use('/api/returns', validateToken, require('./routes/returns'));
+
+// Advanced user routes - require token validation and advanced access
+app.use('/api/pending-transactions', validateToken, requireAdvancedAccess, require('./routes/pendingTransactions'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
