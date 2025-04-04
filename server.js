@@ -14,20 +14,20 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 console.log('Allowed origins for CORS:', allowedOrigins);
 
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      console.log('CORS blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: [
+    'https://expense-frontend-eosin.vercel.app',
+    'https://expense-frontend-mins-projects-b691d852.vercel.app'
+  ],
   credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept'
+  ],
+  exposedHeaders: ['Set-Cookie'],
+  maxAge: 86400 // 24 hours
 };
 
 app.use(cors(corsOptions));
