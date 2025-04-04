@@ -68,7 +68,6 @@ const validateSecretKey = (req, res, next) => {
     });
   }
 
-  console.log('Secret key validated');
   next();
 };
 

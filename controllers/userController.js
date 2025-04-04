@@ -28,7 +28,6 @@ exports.createUser = async (req, res) => {
 
 // Fetch user by email
 exports.fetchUserByEmail = async (req, res) => {
-  console.log("fetchUserByEmail called")
   try {
     const { email } = req.body;
     if (!email) {
@@ -74,7 +73,6 @@ exports.fetchUserByEmail = async (req, res) => {
 // Verify token and fetch user
 exports.verifyToken = async (req, res) => {
   try {
-    console.log("verifyToken called in server")
     const { token } = req.body;
     
     if (!token) {

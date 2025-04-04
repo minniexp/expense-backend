@@ -6,18 +6,21 @@ require('dotenv').config();
 
 const app = express();
 
-// Get allowed origins from environment variable
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-  ? process.env.ALLOWED_ORIGINS.split(',') 
-  : '*';
+// Get allowed origins from environment variable or use defaults
+const productionOrigins = [
+  'https://expense-frontend-eosin.vercel.app',
+  'https://expense-frontend-mins-projects-b691d852.vercel.app'
+];
 
-console.log('Allowed origins for CORS:', allowedOrigins);
+const developmentOrigins = [
+  ...productionOrigins,
+  'http://localhost:3000'
+];
 
 const corsOptions = {
-  origin: [
-    'https://expense-frontend-eosin.vercel.app',
-    'https://expense-frontend-mins-projects-b691d852.vercel.app'
-  ],
+  origin: process.env.NODE_ENV === 'production' 
+    ? productionOrigins 
+    : developmentOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
