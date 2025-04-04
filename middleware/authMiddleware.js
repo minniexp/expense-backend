@@ -15,14 +15,19 @@ const validateToken = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Check if user exists
-    const user = await User.findOne({ _id: decoded.userId });
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+    // Add timestamp check
+    if (decoded.exp && Date.now() >= decoded.exp * 1000) {
+      return res.status(401).json({ error: 'Token has expired' });
     }
-    
-    if (!user.isApproved) {
-      return res.status(403).json({ error: 'User is not approved' });
+
+    // Check if user exists and is approved
+    const user = await User.findOne({ 
+      _id: decoded.userId,
+      isApproved: true // Only find approved users
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found or not approved' });
     }
 
     // Attach user to request object

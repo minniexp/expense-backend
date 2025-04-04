@@ -39,28 +39,36 @@ exports.fetchUserByEmail = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Update last login time
-    user.lastLogin = new Date();
-    await user.save();
+    // Check if user is approved BEFORE generating token
+    if (!user.isApproved) {
+      return res.status(403).json({ 
+        error: 'Account not approved',
+        redirectTo: '/auth/error?error=not_approved'
+      });
+    }
 
-    // Generate a session token valid for 6 months
+    // Only generate token for approved users
     const token = jwt.sign(
       { 
         userId: user._id,
         email: user.email,
         accessLevel: user.accessLevel,
-        isApproved: user.isApproved
+        isApproved: true  // We know it's true at this point
       },
       process.env.JWT_SECRET,
-      { expiresIn: '180d' } // 180 days
+      { expiresIn: '180d' }
     );
+
+    // Update last login only for approved users
+    user.lastLogin = new Date();
+    await user.save();
 
     res.status(200).json({
       user: {
         email: user.email,
         name: user.name,
         accessLevel: user.accessLevel,
-        isApproved: user.isApproved
+        isApproved: true
       },
       token
     });
@@ -73,24 +81,31 @@ exports.fetchUserByEmail = async (req, res) => {
 // Verify token and fetch user
 exports.verifyToken = async (req, res) => {
   try {
-    const { token } = req.body;
+    // Get token from both body and header
+    const token = req.body.token || req.headers.authorization?.split(' ')[1];
     
     if (!token) {
-      return res.status(400).json({ error: 'Token is required' });
+      return res.status(401).json({ error: 'No token provided' });
     }
 
     // Verify the token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     
-    // Check if user exists
+    // Check if user exists and add timestamp check
     const user = await User.findOne({ _id: decoded.userId });
     
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
+    // Add strict approval check
     if (!user.isApproved) {
       return res.status(403).json({ error: 'User is not approved' });
+    }
+
+    // Check token expiration
+    if (decoded.exp && Date.now() >= decoded.exp * 1000) {
+      return res.status(401).json({ error: 'Token has expired' });
     }
 
     res.status(200).json({
@@ -111,5 +126,21 @@ exports.verifyToken = async (req, res) => {
     }
     console.error('Error verifying token:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Add this function to periodically clean up expired tokens
+exports.cleanupExpiredTokens = async () => {
+  try {
+    const users = await User.find({
+      lastLogin: { $lt: new Date(Date.now() - 180 * 24 * 60 * 60 * 1000) } // 180 days
+    });
+    
+    for (const user of users) {
+      user.isApproved = false;  // Require re-approval for long-inactive users
+      await user.save();
+    }
+  } catch (error) {
+    console.error('Error cleaning up expired tokens:', error);
   }
 }; 
