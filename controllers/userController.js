@@ -74,6 +74,7 @@ exports.fetchUserByEmail = async (req, res) => {
 // Verify token and fetch user
 exports.verifyToken = async (req, res) => {
   try {
+    console.log("verifyToken called in server")
     const { token } = req.body;
     
     if (!token) {
