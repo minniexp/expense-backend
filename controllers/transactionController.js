@@ -261,8 +261,8 @@ exports.updateTransactionsMany = async (req, res) => {
   console.log("updateTransactionsMany reached backend");
   try {
     const transactions = req.body;
-    console.log("req.body", req.body);
-
+    console.log("req.body type:", Array.isArray(transactions)); // Should print: true
+    console.log("req.body:", transactions); // Should show the array structure
 
     if (!Array.isArray(transactions)) {
       return res.status(400).json({ 
