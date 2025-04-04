@@ -258,8 +258,11 @@ exports.deleteAllTransactions = async (req, res) => {
 };
 
 exports.updateTransactionsMany = async (req, res) => {
+  console.log("updateTransactionsMany reached backend");
   try {
     const transactions = req.body;
+    console.log("req.body", req.body);
+
 
     if (!Array.isArray(transactions)) {
       return res.status(400).json({ 
