@@ -231,7 +231,7 @@ exports.getTellerTransactions = async (req, res) => {
           const transactionDate = new Date(transaction.date);
           const lastProcessedDate = new Date(lastDate);
           
-          const is2025 = transaction.date.startsWith('2025');
+          const is2026 = transaction.date.startsWith('2026');
           const isNewerThanLastDate = transactionDate > lastProcessedDate;
           
           const excludedPhrases = [
@@ -245,7 +245,7 @@ exports.getTellerTransactions = async (req, res) => {
             transaction.description.includes(phrase)
           );
           
-          return is2025 && isNewerThanLastDate && !shouldExclude;
+          return is2026 && isNewerThanLastDate && !shouldExclude;
         })
         .map(transaction => {
           const [year, month, day] = transaction.date.split('-').map(Number);
