@@ -151,20 +151,20 @@ const determineTransactionType = (cardName, amount) => {
 };
 
 // Add this helper function at the top with other helper functions
-const getReturnIdForMonth = (month) => {
+const getReturnIdForMonth = (year, month) => {
   const monthMap = {
-    1: process.env.JAN_RETURNID,
-    2: process.env.FEB_RETURNID,
-    3: process.env.MAR_RETURNID,
-    4: process.env.APR_RETURNID,
-    5: process.env.MAY_RETURNID,
-    6: process.env.JUN_RETURNID,
-    7: process.env.JUL_RETURNID,
-    8: process.env.AUG_RETURNID,
-    9: process.env.SEP_RETURNID,
-    10: process.env.OCT_RETURNID,
-    11: process.env.NOV_RETURNID,
-    12: process.env.DEC_RETURNID
+    1: process.env[`${year}_JAN_RETURNID`],
+    2: process.env[`${year}_FEB_RETURNID`],
+    3: process.env[`${year}_MAR_RETURNID`],
+    4: process.env[`${year}_APR_RETURNID`],
+    5: process.env[`${year}_MAY_RETURNID`],
+    6: process.env[`${year}_JUN_RETURNID`],
+    7: process.env[`${year}_JUL_RETURNID`],
+    8: process.env[`${year}_AUG_RETURNID`],
+    9: process.env[`${year}_SEP_RETURNID`],
+    10: process.env[`${year}_OCT_RETURNID`],
+    11: process.env[`${year}_NOV_RETURNID`],
+    12: process.env[`${year}_DEC_RETURNID`]
   };
   return monthMap[month];
 };
@@ -268,7 +268,7 @@ exports.getTellerTransactions = async (req, res) => {
             description: transaction.description,
             paymentMethod: cardName,
             points: calculatePoints(cardName, purchaseCategories, month),
-            returnId: isParentsMonthly ? getReturnIdForMonth(month) : null,
+            returnId: isParentsMonthly ? getReturnIdForMonth(year, month) : null,
             returned: false,
             needToBePaidback: isParentsMonthly
           };
