@@ -21,12 +21,17 @@ const getTellerConfig = () => {
 
 exports.getEnrollmentToken = async (req, res) => {
   try {
-    // You'll get this from Teller's dashboard
-    const applicationId = process.env.TELLER_APPLICATION_ID;
-    
-    res.json({ 
-      applicationId,
-      environment: process.env.TELLER_ENV || 'sandbox'
+    const enrollmentId = process.env.TELLER_ENROLLMENT_ID || null;
+    console.log('[GET /enrollment-config]', {
+      applicationIdSet: Boolean(process.env.TELLER_APPLICATION_ID),
+      environment: process.env.TELLER_ENV || 'sandbox',
+      enrollmentIdSet: Boolean(enrollmentId),
+      enrollmentIdValue: enrollmentId,
+    });
+    res.json({
+      applicationId: process.env.TELLER_APPLICATION_ID,
+      environment: process.env.TELLER_ENV || 'sandbox',
+      enrollmentId,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -202,11 +207,22 @@ exports.getTellerTransactions = async (req, res) => {
 
     const agent = new https.Agent(getTellerConfig());
     const allTransactions = [];
+    const lastProcessedDate = new Date(lastDate);
+    console.log(
+      `lastDate raw=${JSON.stringify(lastDate)} ` +
+      `typeof=${typeof lastDate} ` +
+      `parsed=${isNaN(lastProcessedDate) ? 'Invalid Date' : lastProcessedDate.toISOString()}`
+    );
 
     // Get transactions for each card
     for (const [cardName, accountId] of Object.entries(cardMapping)) {
+      if (!accountId) {
+        console.warn(`Skipping ${cardName}: no account ID configured in env`);
+        continue;
+      }
+
       const transactionsResponse = await fetch(
-        `https://api.teller.io/accounts/${accountId}/transactions?count=100`,
+        `https://api.teller.io/accounts/${accountId}/transactions?count=500`,
         {
           method: 'GET',
           agent,
@@ -218,34 +234,71 @@ exports.getTellerTransactions = async (req, res) => {
       );
 
       if (!transactionsResponse.ok) {
-        console.error(`Error fetching transactions for ${cardName} (${accountId})`);
+        const body = await transactionsResponse.text();
+        console.error(
+          `Error fetching transactions for ${cardName} (${accountId}): ` +
+          `status=${transactionsResponse.status} body=${body}`
+        );
         continue;
       }
 
       const transactions = await transactionsResponse.json();
-      
-      // Format transactions and filter
+
+      if (!Array.isArray(transactions)) {
+        console.error(
+          `Unexpected non-array response for ${cardName}:`,
+          JSON.stringify(transactions).slice(0, 300)
+        );
+        continue;
+      }
+
+      if (transactions.length > 0) {
+        const sortedDates = transactions
+          .map(t => t.date)
+          .filter(Boolean)
+          .sort();
+        const oldest = sortedDates[0];
+        const newest = sortedDates[sortedDates.length - 1];
+        console.log(`[${cardName}] date range in response: oldest=${oldest} newest=${newest}`);
+
+        const newestFive = [...transactions]
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+          .slice(0, 5)
+          .map(t => `${t.date} | status=${t.status} | ${String(t.description).slice(0, 40)}`);
+        console.log(`[${cardName}] newest 5 transactions:\n  ${newestFive.join('\n  ')}`);
+      }
+
+      const excludedPhrases = [
+        'Payment to Chase card ending in',
+        'PAYMENT TO CHASE CARD ENDING IN',
+        'Payment Thank You-Mobile',
+        'PAYMENT-THANK YOU',
+        'Online Transfer'
+      ];
+
+      let droppedByDate = 0;
+      let droppedByExclusion = 0;
+
       const formattedTransactions = transactions
         .filter(transaction => {
-          // Filter out transactions older than lastDate
           const transactionDate = new Date(transaction.date);
-          const lastProcessedDate = new Date(lastDate);
-          
-          const is2026 = transaction.date.startsWith('2026');
           const isNewerThanLastDate = transactionDate > lastProcessedDate;
-          
-          const excludedPhrases = [
-            'Payment to Chase card ending in',
-            'PAYMENT TO CHASE CARD ENDING IN',
-            'Payment Thank You-Mobile',
-            'PAYMENT-THANK YOU',
-            'Online Transfer'
-          ];
-          const shouldExclude = excludedPhrases.some(phrase => 
+
+          if (!isNewerThanLastDate) {
+            droppedByDate++;
+            return false;
+          }
+
+          const shouldExclude = excludedPhrases.some(phrase =>
             transaction.description.includes(phrase)
           );
-          
-          return is2026 && isNewerThanLastDate && !shouldExclude;
+
+          if (shouldExclude) {
+            droppedByExclusion++;
+            return false;
+          }
+
+          return true;
         })
         .map(transaction => {
           const [year, month, day] = transaction.date.split('-').map(Number);
@@ -274,12 +327,19 @@ exports.getTellerTransactions = async (req, res) => {
           };
         });
 
+      console.log(
+        `[${cardName}] received=${transactions.length} ` +
+        `kept=${formattedTransactions.length} ` +
+        `droppedByDate=${droppedByDate} droppedByExclusion=${droppedByExclusion}`
+      );
+
       allTransactions.push(...formattedTransactions);
     }
 
     // Sort all transactions by date
     allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
+
+    console.log(`Returning ${allTransactions.length} total transactions`);
     res.json(allTransactions);
   } catch (error) {
     console.error('Error in getAllTransactions:', error);
