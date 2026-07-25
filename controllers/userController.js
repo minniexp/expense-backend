@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const { verifyGoogleIdToken } = require('../services/googleIdToken');
 
 exports.createUser = async (req, res) => {
   try {
@@ -26,12 +27,63 @@ exports.createUser = async (req, res) => {
   }
 };
 
-// Fetch user by email
+/**
+ * Session lifetime.
+ *
+ * Was 180 days. There is no revocation list and no `jti`, so a stolen token could not be
+ * invalidated short of rotating JWT_SECRET and signing everyone out. Seven days keeps the
+ * blast radius of a leak small while still being long enough not to be a nuisance — the Google
+ * session silently re-mints this on the next visit.
+ */
+const SESSION_TTL = process.env.SESSION_TTL || '7d';
+
+/**
+ * Exchange a Google-signed ID token for one of our session tokens.
+ *
+ * SECURITY — read before changing.
+ * This endpoint used to accept `{ email }` from the request body and return a 180-day
+ * full-access JWT, and it was mounted with no auth middleware. Anyone on the internet who knew
+ * an approved email address — and email addresses are not secrets — could obtain complete
+ * access to the bank transaction API without ever signing in to Google.
+ *
+ * Two independent controls now stand in front of it:
+ *   1. `requireInternalSecret` — only our own Next.js server can reach this route at all.
+ *   2. Google ID token verification — the identity comes from claims Google cryptographically
+ *      signed, so even a caller that has the internal secret cannot impersonate a user.
+ *
+ * The email in the request body is IGNORED. It is read from the verified token instead.
+ * Do not reintroduce a body-supplied identity.
+ */
 exports.fetchUserByEmail = async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
+    const { idToken } = req.body || {};
+    if (!idToken) {
+      return res.status(400).json({ error: 'A Google ID token is required' });
+    }
+
+    let claims;
+    try {
+      claims = await verifyGoogleIdToken(idToken, {
+        clientId: process.env.GOOGLE_CLIENT_ID,
+      });
+    } catch (err) {
+      // Deliberately terse to the caller; the detail goes to the server log only.
+      console.warn('Rejected sign-in — Google ID token verification failed:', err.message);
+      return res.status(401).json({ error: 'Google sign-in could not be verified' });
+    }
+
+    // The identity, from Google's signed claims — never from the request body.
+    const email = claims.email;
+
+    // Optional hard allowlist. When set it overrides the isApproved flag entirely, so a
+    // database change alone cannot grant access to this deployment.
+    const allowlist = (process.env.TELLER_ALLOWED_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    if (allowlist.length > 0 && !allowlist.includes(email)) {
+      console.warn(`Rejected sign-in — ${email} is not in TELLER_ALLOWED_EMAILS`);
+      return res.status(403).json({ error: 'Account not approved' });
     }
 
     const user = await User.findOne({ email });
@@ -41,7 +93,7 @@ exports.fetchUserByEmail = async (req, res) => {
 
     // Check if user is approved BEFORE generating token
     if (!user.isApproved) {
-      return res.status(403).json({ 
+      return res.status(403).json({
         error: 'Account not approved',
         redirectTo: '/auth/error?error=not_approved'
       });
@@ -49,14 +101,14 @@ exports.fetchUserByEmail = async (req, res) => {
 
     // Only generate token for approved users
     const token = jwt.sign(
-      { 
+      {
         userId: user._id,
         email: user.email,
         accessLevel: user.accessLevel,
         isApproved: true  // We know it's true at this point
       },
       process.env.JWT_SECRET,
-      { expiresIn: '180d' }
+      { expiresIn: SESSION_TTL }
     );
 
     // Update last login only for approved users
