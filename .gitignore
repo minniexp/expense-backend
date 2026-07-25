@@ -6,3 +6,4 @@ teller-key.pem
 # Local-only: issue investigation notes contain real transaction data
 .claude/
 .next/
+.vercel

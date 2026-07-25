@@ -152,6 +152,10 @@ app.use(
 
 app.use('/api/returns', requireInternalSecret, validateToken, require('./routes/returns'));
 
+// Trip expense splitter. Same two controls as the rest of the data surface: only our own
+// Next.js server can reach it, and it must still present a valid session.
+app.use('/api/trips', requireInternalSecret, validateToken, require('./routes/trips'));
+
 // Advanced user routes - require token validation and advanced access
 app.use('/api/pending-transactions', requireInternalSecret, validateToken, requireAdvancedAccess, require('./routes/pendingTransactions'));
 
