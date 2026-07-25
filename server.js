@@ -125,7 +125,10 @@ app.get('/', (req, res) => {
 app.use('/api/users', require('./routes/users'));
 
 // Protected routes - require token validation
-app.use('/api/transactions', validateToken, require('./routes/transactions'));
+// The browser reaches these through the Next.js proxy, which supplies the internal secret.
+// Requiring it here means a session token lifted from a browser cannot be replayed against
+// the API directly — there is no longer any credential in client-side JavaScript at all.
+app.use('/api/transactions', requireInternalSecret, validateToken, require('./routes/transactions'));
 
 // Teller is the most sensitive surface in the app: it reaches live bank data.
 // It requires BOTH controls, and they are independent:
@@ -147,10 +150,10 @@ app.use(
   require('./routes/teller')
 );
 
-app.use('/api/returns', validateToken, require('./routes/returns'));
+app.use('/api/returns', requireInternalSecret, validateToken, require('./routes/returns'));
 
 // Advanced user routes - require token validation and advanced access
-app.use('/api/pending-transactions', validateToken, requireAdvancedAccess, require('./routes/pendingTransactions'));
+app.use('/api/pending-transactions', requireInternalSecret, validateToken, requireAdvancedAccess, require('./routes/pendingTransactions'));
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
