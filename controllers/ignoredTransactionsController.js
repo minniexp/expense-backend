@@ -13,6 +13,7 @@ const IgnoredTransaction = require('../models/IgnoredTransaction');
  * review queue, and it can always be restored.
  */
 
+let testMIN = 10;
 const MAX_BATCH = 2000; // a fetch tops out around 2.7k rows; this bounds a malformed request
 
 /**
