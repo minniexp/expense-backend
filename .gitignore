@@ -3,3 +3,6 @@ teller-key.pem
 .env
 /certs
 /node_modules
+# Local-only: issue investigation notes contain real transaction data
+.claude/
+.next/

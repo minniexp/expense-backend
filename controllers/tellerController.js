@@ -1,23 +1,20 @@
 const Transaction = require('../models/Transaction');
-const https = require('https');
-const fs = require('fs');
-const path = require('path');
-const fetch = require('node-fetch');
 const PendingTransactions = require('../models/PendingTransactions');
+const IgnoredTransaction = require('../models/IgnoredTransaction');
+const { fetchAccountTransactions } = require('../services/tellerClient');
+const {
+  resolveWindowStart,
+  diffTellerTransactions,
+  parseIsoDate,
+  DEFAULT_LOOKBACK_DAYS,
+  DUPLICATE_DATE_TOLERANCE_DAYS,
+} = require('../services/transactionSync');
 
-// Store access token temporarily (should be in database for production)
-// let accessToken = 'test_token_rgtjiblbxhhto';
-
+// Access token is read from process.env.TELLER_ACCESS_TOKEN at request time.
+// All Teller traffic goes through the read-only tellerGet() wrapper.
 let accessToken = null;
 
-// Configure mTLS options
-const getTellerConfig = () => {  
-  return {
-    cert: fs.readFileSync(path.join(__dirname, '../certs/certificate.pem')),
-    key: fs.readFileSync(path.join(__dirname, '../certs/private_key.pem')),
-    rejectUnauthorized: true
-  };
-};
+const MS_PER_DAY = 86400000;
 
 exports.getEnrollmentToken = async (req, res) => {
   try {
@@ -49,300 +46,230 @@ exports.handleAccessToken = async (req, res) => {
   }
 };
 
-const determinePurchaseCategory = (transaction) => {
-  const purchaseCategories = new Set(); // Using Set to avoid duplicates
-  const description = transaction.description.toUpperCase(); // Convert to uppercase for case-insensitive matching
+/** Run `worker` over `items` with at most `limit` in flight. Preserves input order. */
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
-  // Rule 1: Grocery stores
-  const groceryStores = ['ALDI', 'H MART', 'JERRY S FRUIT', 'JOONG BOO MARKET', 'ASSI PLAZA'];
-  if (groceryStores.some(store => description.includes(store.toUpperCase()))) {
-    purchaseCategories.add('groceries');
-  }
+const cardMapping = () => ({
+  'Amazon Visa': process.env.AMAZON_VISA_ID,
+  'Chase College': process.env.CHASE_COLLEGE_ID,
+  'Freedom Flex': process.env.FREEDOM_FLEX_ID,
+  'Sapphire Reserve': process.env.SAPPHIRE_RESERVE_ID,
+  Freedom: process.env.FREEDOM_ID,
+  'Freedom Unlimited': process.env.FREEDOM_UNLIMITED_ID,
+});
 
-  // Rule 2: Amazon purchases
-  if (description.includes('AMAZON')) {
-    purchaseCategories.add('amazon');
-  }
-
-  // Rule 3: Drugstores
-  const drugstores = ['WALGREENS', 'CVS'];
-  if (drugstores.some(store => description.includes(store))) {
-    purchaseCategories.add('drugstore');
-  }
-
-  // Rule 4 & 5: Dining category from transaction details
-  if (transaction.details?.category === 'dining') {
-    purchaseCategories.add('dining');
-  }
-
-  return Array.from(purchaseCategories); // Convert Set back to array
-};
-
-const calculatePoints = (cardName, purchaseCategories, month) => {
-  // Rule 2: Chase College gets 0 points
-  if (cardName === 'Chase College') {
-    return 0;
-  }
-
-  // Temporary Rule: Freedom and Freedom Flex grocery purchases for Q1 (months 1-3)
-  if ((cardName === 'Freedom' || cardName === 'Freedom Flex') && 
-      purchaseCategories.includes('groceries') && 
-      [1, 2, 3].includes(month)) {
-    return 5;
-  }
-
-  // Rule 3: Sapphire Reserve Lyft purchases
-  if (cardName === 'Sapphire Reserve' && purchaseCategories.includes('lyft')) {
-    return 10;
-  }
-
-  // Rule 4: Travel rewards for specific cards
-  const travelRewardCards = ['Sapphire Reserve', 'Freedom Unlimited', 'Freedom Flex'];
-  if (travelRewardCards.includes(cardName) && purchaseCategories.includes('flight')) {
-    return 5;
-  }
-
-  // Rule 5: Dining rewards for specific cards
-  if (travelRewardCards.includes(cardName) && purchaseCategories.includes('dining')) {
-    return 3;
-  }
-
-  // Rule 6: Freedom Unlimited base rate
-  if (cardName === 'Freedom Unlimited') {
-    return 1.5;
-  }
-
-  // Rule 1: Default case
-  return 0;
-};
-
-const determineCategory = (transaction) => {
-  const description = transaction.description.toUpperCase();
-
-  // Rule 1: Parents Monthly (Grocery stores)
-  const groceryStores = [
-    'ALDI',
-    'H MART',
-    'JERRY S FRUIT',
-    'JOONG BOO MARKET',
-    'ASSI PLAZA'
-  ];
-  if (groceryStores.some(store => description.includes(store.toUpperCase()))) {
-    return 'parents-monthly';
-  }
-
-  // Rule 2: Bill (Pilates)
-  if (description.includes('WWW.SWAN-DIVEPILATES.C WWW.SWAN-DIVE')) {
-    return 'bill';
-  }
-
-  // Rule 3: Doctors (Dental)
-  if (description.includes('CAREONE DENTAL ASSOCIATES GLENVIEW')) {
-    return 'doctors';
-  }
-
-  // Default case
-  return '';
-};
-
-const determineTransactionType = (cardName, amount) => {
-  // For Chase College and Cash, positive amount means income
-  if (cardName === 'Chase College' || cardName === 'Cash') {
-    return amount > 0 ? 'income' : 'expense';
-  }
-  
-  // For all other cards, positive amount means expense
-  return amount > 0 ? 'expense' : 'income';
-};
-
-// Add this helper function at the top with other helper functions
-const getReturnIdForMonth = (year, month) => {
-  const monthMap = {
-    1: process.env[`${year}_JAN_RETURNID`],
-    2: process.env[`${year}_FEB_RETURNID`],
-    3: process.env[`${year}_MAR_RETURNID`],
-    4: process.env[`${year}_APR_RETURNID`],
-    5: process.env[`${year}_MAY_RETURNID`],
-    6: process.env[`${year}_JUN_RETURNID`],
-    7: process.env[`${year}_JUL_RETURNID`],
-    8: process.env[`${year}_AUG_RETURNID`],
-    9: process.env[`${year}_SEP_RETURNID`],
-    10: process.env[`${year}_OCT_RETURNID`],
-    11: process.env[`${year}_NOV_RETURNID`],
-    12: process.env[`${year}_DEC_RETURNID`]
-  };
-  return monthMap[month];
-};
-
+/**
+ * GET /api/teller/transactions
+ *
+ * Returns the Teller transactions that are NOT yet in MongoDB.
+ *
+ * This used to filter on `date > PendingTransactions.lastDate`, a high-water mark. That was
+ * the bug: Chase reports the transaction date, not the posting date, and posts in batches
+ * through the day, so anything arriving later with an equal-or-earlier date was dropped on
+ * every subsequent fetch — permanently. 506 transactions had been lost that way.
+ *
+ * The watermark is gone. What is "new" is now decided by set-differencing Teller's
+ * transaction ids against the ids already in the Transaction collection, so the result is
+ * idempotent and self-healing: anything unsaved keeps reappearing until it is saved.
+ *
+ * Query parameters (all optional):
+ *   days=90        lookback window in days (default 90) — a DISPLAY window, not a watermark
+ *   since=YYYY-MM-DD  explicit window start, overrides `days`
+ *   all=true       no lower bound (paginates deep; slower)
+ *   format=detailed  return { transactions, summary } instead of a bare array
+ *
+ * `format` defaults to the legacy bare-array shape so an older deployed frontend keeps
+ * working against this backend during a staggered deploy.
+ */
 exports.getTellerTransactions = async (req, res) => {
   try {
     accessToken = process.env.TELLER_ACCESS_TOKEN;
     if (!accessToken) {
-      return res.status(400).json({ 
-        error: 'No access token available. Please connect a bank account first.' 
+      return res.status(400).json({
+        error: 'No access token available. Please connect a bank account first.',
       });
     }
 
-    // Fetch pending transaction document
-    const pendingTransactionDoc = await PendingTransactions.findById(process.env.PENDING_TRANSACTIONS_ID);
-    if (!pendingTransactionDoc) {
-      return res.status(404).json({ 
-        error: 'Pending transaction document not found' 
-      });
+    const windowStart = resolveWindowStart({
+      days: req.query.days,
+      since: req.query.since,
+      all: req.query.all,
+    });
+
+    // The legacy watermark is read for logging only — nothing filters on it any more.
+    // A missing PendingTransactions document is no longer fatal; it was only ever a cursor.
+    let legacyWatermark = null;
+    try {
+      const pendingDoc = await PendingTransactions.findById(process.env.PENDING_TRANSACTIONS_ID);
+      legacyWatermark = pendingDoc?.lastDate ?? null;
+    } catch (err) {
+      console.warn('Could not read PendingTransactions (non-fatal):', err.message);
     }
 
-    const { lastTellerTransactionId, lastDate } = pendingTransactionDoc;
-    console.log('Last processed date:', lastDate);
-    console.log('Last transaction ID:', lastTellerTransactionId);
-
-    // Define card mapping with card names as keys
-    const cardMapping = {
-      'Amazon Visa': process.env.AMAZON_VISA_ID,
-      'Chase College': process.env.CHASE_COLLEGE_ID,
-      'Freedom Flex': process.env.FREEDOM_FLEX_ID,
-      'Sapphire Reserve': process.env.SAPPHIRE_RESERVE_ID,
-      'Freedom': process.env.FREEDOM_ID,
-      'Freedom Unlimited': process.env.FREEDOM_UNLIMITED_ID
-    };
-
-    const agent = new https.Agent(getTellerConfig());
-    const allTransactions = [];
-    const lastProcessedDate = new Date(lastDate);
     console.log(
-      `lastDate raw=${JSON.stringify(lastDate)} ` +
-      `typeof=${typeof lastDate} ` +
-      `parsed=${isNaN(lastProcessedDate) ? 'Invalid Date' : lastProcessedDate.toISOString()}`
+      `[GET /teller/transactions] windowStart=${windowStart ?? 'ALL'} ` +
+      `legacyWatermark=${legacyWatermark ?? 'none'} (informational only)`
     );
 
-    // Get transactions for each card
-    for (const [cardName, accountId] of Object.entries(cardMapping)) {
+    // --- fetch the accounts ---------------------------------------------------------------
+    // Teller rate-limits bursts. A bounded window resolves in one page per account, so all six
+    // can go out at once exactly as before. An unbounded fetch paginates deeply, which is what
+    // tripped `429 too_many_requests` in testing — so throttle that case hard.
+    const cards = Object.entries(cardMapping());
+    const concurrency = windowStart === null ? 2 : cards.length;
+    const accountReports = [];
+    const tellerTransactions = [];
+
+    const results = await mapWithConcurrency(cards, concurrency, async ([cardName, accountId]) => {
       if (!accountId) {
         console.warn(`Skipping ${cardName}: no account ID configured in env`);
+        return { cardName, skipped: true };
+      }
+      const out = await fetchAccountTransactions(accountId, accessToken, {
+        startDate: windowStart,
+      });
+      return { cardName, ...out };
+    });
+
+    for (const r of results) {
+      if (r.skipped) {
+        accountReports.push({ card: r.cardName, skipped: 'no account ID configured' });
         continue;
       }
-
-      const transactionsResponse = await fetch(
-        `https://api.teller.io/accounts/${accountId}/transactions?count=500`,
-        {
-          method: 'GET',
-          agent,
-          headers: {
-            'Authorization': `Basic ${Buffer.from(`${accessToken}:`).toString('base64')}`,
-            'Accept': 'application/json'
-          },
-        }
-      );
-
-      if (!transactionsResponse.ok) {
-        const body = await transactionsResponse.text();
-        console.error(
-          `Error fetching transactions for ${cardName} (${accountId}): ` +
-          `status=${transactionsResponse.status} body=${body}`
+      if (r.error) {
+        console.error(`Error fetching transactions for ${r.cardName}: ${r.error}`);
+      }
+      if (r.truncated) {
+        console.warn(
+          `[${r.cardName}] pagination TRUNCATED after ${r.pages} pages — ` +
+          'results are incomplete for this account'
         );
-        continue;
       }
-
-      const transactions = await transactionsResponse.json();
-
-      if (!Array.isArray(transactions)) {
-        console.error(
-          `Unexpected non-array response for ${cardName}:`,
-          JSON.stringify(transactions).slice(0, 300)
-        );
-        continue;
+      accountReports.push({
+        card: r.cardName,
+        fetched: r.transactions.length,
+        pages: r.pages,
+        truncated: r.truncated,
+        rateLimited: r.rateLimited,
+        error: r.error,
+      });
+      for (const t of r.transactions) {
+        tellerTransactions.push({ cardName: r.cardName, transaction: t });
       }
-
-      if (transactions.length > 0) {
-        const sortedDates = transactions
-          .map(t => t.date)
-          .filter(Boolean)
-          .sort();
-        const oldest = sortedDates[0];
-        const newest = sortedDates[sortedDates.length - 1];
-        console.log(`[${cardName}] date range in response: oldest=${oldest} newest=${newest}`);
-
-        const newestFive = [...transactions]
-          .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
-          .slice(0, 5)
-          .map(t => `${t.date} | status=${t.status} | ${String(t.description).slice(0, 40)}`);
-        console.log(`[${cardName}] newest 5 transactions:\n  ${newestFive.join('\n  ')}`);
-      }
-
-      const excludedPhrases = [
-        'Payment to Chase card ending in',
-        'PAYMENT TO CHASE CARD ENDING IN',
-        'Payment Thank You-Mobile',
-        'PAYMENT-THANK YOU',
-        'Online Transfer'
-      ];
-
-      let droppedByDate = 0;
-      let droppedByExclusion = 0;
-
-      const formattedTransactions = transactions
-        .filter(transaction => {
-          const transactionDate = new Date(transaction.date);
-          const isNewerThanLastDate = transactionDate > lastProcessedDate;
-
-          if (!isNewerThanLastDate) {
-            droppedByDate++;
-            return false;
-          }
-
-          const shouldExclude = excludedPhrases.some(phrase =>
-            transaction.description.includes(phrase)
-          );
-
-          if (shouldExclude) {
-            droppedByExclusion++;
-            return false;
-          }
-
-          return true;
-        })
-        .map(transaction => {
-          const [year, month, day] = transaction.date.split('-').map(Number);
-          const purchaseCategories = determinePurchaseCategory(transaction);
-          const category = determineCategory(transaction);
-          const isParentsMonthly = category === 'parents-monthly';
-
-          return {
-            userId: process.env.MONGODB_USERID,
-            tellerTransactionId: transaction.id,
-            date: transaction.date,
-            year,
-            month,
-            day,
-            amount: transaction.amount,
-            transactionType: determineTransactionType(cardName, transaction.amount),
-            notes: '',
-            category,
-            purchaseCategory: purchaseCategories,
-            description: transaction.description,
-            paymentMethod: cardName,
-            points: calculatePoints(cardName, purchaseCategories, month),
-            returnId: isParentsMonthly ? getReturnIdForMonth(year, month) : null,
-            returned: false,
-            needToBePaidback: isParentsMonthly
-          };
-        });
-
-      console.log(
-        `[${cardName}] received=${transactions.length} ` +
-        `kept=${formattedTransactions.length} ` +
-        `droppedByDate=${droppedByDate} droppedByExclusion=${droppedByExclusion}`
-      );
-
-      allTransactions.push(...formattedTransactions);
     }
 
-    // Sort all transactions by date
-    allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+    // --- what is already logged ----------------------------------------------------------
+    const fetchedIds = tellerTransactions
+      .map((e) => e.transaction && e.transaction.id)
+      .filter(Boolean);
 
-    console.log(`Returning ${allTransactions.length} total transactions`);
-    res.json(allTransactions);
+    // One query. Two things are needed from Mongo:
+    //   1. rows whose tellerTransactionId matches anything Teller just returned (the diff), and
+    //   2. rows sitting inside the window (widened by the duplicate tolerance) so a re-issued
+    //      pending transaction can be recognised even though its id changed.
+    const projection = 'tellerTransactionId date amount paymentMethod';
+    let loggedTransactions;
+    if (windowStart) {
+      const extendedStart = new Date(
+        parseIsoDate(windowStart) - DUPLICATE_DATE_TOLERANCE_DAYS * MS_PER_DAY
+      ).toISOString().slice(0, 10);
+      loggedTransactions = await Transaction.find(
+        {
+          $or: [
+            { tellerTransactionId: { $in: fetchedIds } },
+            { date: { $gte: extendedStart } }, // `date` is a 'YYYY-MM-DD' string — lexicographic compare is correct
+          ],
+        },
+        projection
+      ).lean();
+    } else {
+      loggedTransactions = await Transaction.find({}, projection).lean();
+    }
+
+    // --- what has been deliberately dismissed ---------------------------------------------
+    // Scoped to the ids Teller actually returned, so this stays O(fetch) rather than loading
+    // the whole dismissed history on every request.
+    const ignoredRows = await IgnoredTransaction.find(
+      { tellerTransactionId: { $in: fetchedIds } },
+      'tellerTransactionId'
+    ).lean();
+    const ignoredIds = new Set(ignoredRows.map((r) => r.tellerTransactionId));
+
+    // --- the diff ------------------------------------------------------------------------
+    const { newTransactions, summary } = diffTellerTransactions({
+      tellerTransactions,
+      loggedTransactions,
+      ignoredIds,
+      windowStart,
+      userId: process.env.MONGODB_USERID,
+    });
+
+    // Belt-and-braces. The diff above is the thing that decides what is new, and it is unit
+    // tested — but this endpoint's whole contract is "the frontend never sees a transaction
+    // that is already in the ledger", and that contract is worth enforcing at the boundary
+    // rather than trusting one code path. If this ever strips anything, the diff has a bug:
+    // say so loudly instead of quietly serving a double-entry to the review table.
+    const loggedIdSet = new Set(
+      loggedTransactions.map((r) => r && r.tellerTransactionId).filter(Boolean).map(String)
+    );
+    const safeTransactions = newTransactions.filter(
+      (t) => !loggedIdSet.has(t.tellerTransactionId) && !ignoredIds.has(t.tellerTransactionId)
+    );
+    if (safeTransactions.length !== newTransactions.length) {
+      console.error(
+        '[GET /teller/transactions] INVARIANT VIOLATION: the diff returned ' +
+        `${newTransactions.length - safeTransactions.length} already-logged or dismissed ` +
+        'transaction(s); they were stripped before responding. ' +
+        'This is a bug in diffTellerTransactions().'
+      );
+      summary.newCount = safeTransactions.length;
+    }
+
+    const truncatedAccounts = accountReports.filter((a) => a.truncated).map((a) => a.card);
+    const failedAccounts = accountReports.filter((a) => a.error).map((a) => a.card);
+    const rateLimitedAccounts = accountReports.filter((a) => a.rateLimited).map((a) => a.card);
+
+    console.log(
+      `[GET /teller/transactions] fetched=${summary.fetched} ` +
+      `alreadyLogged=${summary.alreadyLogged} ignored=${summary.ignored} ` +
+      `excluded=${summary.excluded} ` +
+      `outsideWindow=${summary.outsideWindow} malformed=${summary.malformed} ` +
+      `NEW=${summary.newCount} possibleDuplicates=${summary.possibleDuplicates}`
+    );
+
+    if (req.query.format === 'detailed') {
+      return res.json({
+        transactions: safeTransactions,
+        summary: {
+          ...summary,
+          windowStart,
+          defaultLookbackDays: DEFAULT_LOOKBACK_DAYS,
+          legacyWatermark,
+          totalIgnored: await IgnoredTransaction.countDocuments(),
+          accounts: accountReports,
+          // surfaced, never silent: coverage is incomplete for these accounts
+          truncatedAccounts,
+          failedAccounts,
+          rateLimitedAccounts,
+        },
+      });
+    }
+
+    // legacy shape
+    res.json(safeTransactions);
   } catch (error) {
-    console.error('Error in getAllTransactions:', error);
+    console.error('Error in getTellerTransactions:', error);
     res.status(500).json({ error: error.message });
   }
 };

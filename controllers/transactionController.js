@@ -226,17 +226,28 @@ exports.createBulkTransactions = async (req, res) => {
       console.log('Newest transaction date:', newestTransaction.date);
       console.log('Oldest transaction date:', oldestTransaction.date);
 
-      // Update PendingTransactions
+      // Update PendingTransactions.
+      //
+      // ⚠️ INFORMATIONAL ONLY — DO NOT FILTER ON THIS.
+      // `lastDate` used to be a high-water mark that the Teller sync filtered on
+      // (`date > lastDate`). That silently swallowed 506 transactions: Chase reports the
+      // transaction date rather than the posting date and posts in batches through the day,
+      // so anything arriving later with an equal-or-earlier date was dropped forever. Worse,
+      // this line advances the mark to the newest transaction the user chose to SAVE, burying
+      // any older transaction they left unreviewed.
+      //
+      // The sync now set-differences on `tellerTransactionId` instead
+      // (services/transactionSync.js). This field is kept only as a record of the last save.
       await PendingTransactions.findByIdAndUpdate(
         process.env.PENDING_TRANSACTIONS_ID,
-        { 
+        {
           lastDate: newestTransaction.date,
           lastTellerTransactionId: newestTransaction.tellerTransactionId
         },
         { new: true }
       );
 
-      console.log('Updated PendingTransactions lastDate to:', newestTransaction.date);
+      console.log('Recorded last save date (informational):', newestTransaction.date);
     }
     
     console.log(`Successfully created ${savedTransactions.length} new transactions`);

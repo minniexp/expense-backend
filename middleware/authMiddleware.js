@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const User = require('../models/User');
 
 // Middleware to validate JWT token
@@ -59,18 +60,41 @@ const requireAdvancedAccess = (req, res, next) => {
   next();
 };
 
-// Middleware to validate secret key (for backward compatibility)
-const validateSecretKey = (req, res, next) => {
-  // Skip validation for GET requests
-  if (req.method === 'GET') {
-    return next();
+/**
+ * Require a secret that only our own Next.js server knows.
+ *
+ * This is the control that keeps the browser off the sensitive routes entirely. The value is a
+ * server-only environment variable on the Next.js side — it is never sent to the browser, never
+ * prefixed `NEXT_PUBLIC_`, and never appears in a client bundle. So even a session token stolen
+ * out of a user's browser cannot, on its own, reach Teller or mint a new session: an attacker
+ * would need to compromise the server too.
+ *
+ * Compared with the `validateSecretKey` this replaces — which compared `SECRET_KEY` against
+ * `CHECK_KEY`, i.e. two environment variables against each other, ignoring the request
+ * entirely and therefore capable of rejecting nothing — this actually inspects the caller.
+ */
+const requireInternalSecret = (req, res, next) => {
+  const expected = process.env.INTERNAL_API_SECRET;
+
+  // Fail closed. An unset secret must never mean "let everyone through", which is precisely
+  // how the endpoint this protects came to be open in the first place.
+  if (!expected || expected.length < 32) {
+    console.error(
+      'INTERNAL_API_SECRET is missing or too short (need >= 32 chars) — refusing the request'
+    );
+    return res.status(503).json({ error: 'Server is not configured for this request' });
   }
 
-  // Check if secret key matches
-  if (process.env.SECRET_KEY !== process.env.CHECK_KEY) {
-    return res.status(401).json({ 
-      message: 'Unauthorized: Invalid secret key' 
-    });
+  const provided = req.headers['x-internal-secret'];
+  if (typeof provided !== 'string' || provided.length !== expected.length) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Constant-time compare so response timing cannot be used to recover the secret byte by byte.
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 
   next();
@@ -79,5 +103,5 @@ const validateSecretKey = (req, res, next) => {
 module.exports = {
   validateToken,
   requireAdvancedAccess,
-  validateSecretKey
-}; 
+  requireInternalSecret
+};
