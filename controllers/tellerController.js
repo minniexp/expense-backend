@@ -1,5 +1,6 @@
 const Transaction = require('../models/Transaction');
 const PendingTransactions = require('../models/PendingTransactions');
+const IgnoredTransaction = require('../models/IgnoredTransaction');
 const { fetchAccountTransactions } = require('../services/tellerClient');
 const {
   resolveWindowStart,
@@ -196,10 +197,20 @@ exports.getTellerTransactions = async (req, res) => {
       loggedTransactions = await Transaction.find({}, projection).lean();
     }
 
+    // --- what has been deliberately dismissed ---------------------------------------------
+    // Scoped to the ids Teller actually returned, so this stays O(fetch) rather than loading
+    // the whole dismissed history on every request.
+    const ignoredRows = await IgnoredTransaction.find(
+      { tellerTransactionId: { $in: fetchedIds } },
+      'tellerTransactionId'
+    ).lean();
+    const ignoredIds = new Set(ignoredRows.map((r) => r.tellerTransactionId));
+
     // --- the diff ------------------------------------------------------------------------
     const { newTransactions, summary } = diffTellerTransactions({
       tellerTransactions,
       loggedTransactions,
+      ignoredIds,
       windowStart,
       userId: process.env.MONGODB_USERID,
     });
@@ -212,12 +223,15 @@ exports.getTellerTransactions = async (req, res) => {
     const loggedIdSet = new Set(
       loggedTransactions.map((r) => r && r.tellerTransactionId).filter(Boolean).map(String)
     );
-    const safeTransactions = newTransactions.filter((t) => !loggedIdSet.has(t.tellerTransactionId));
+    const safeTransactions = newTransactions.filter(
+      (t) => !loggedIdSet.has(t.tellerTransactionId) && !ignoredIds.has(t.tellerTransactionId)
+    );
     if (safeTransactions.length !== newTransactions.length) {
       console.error(
         '[GET /teller/transactions] INVARIANT VIOLATION: the diff returned ' +
-        `${newTransactions.length - safeTransactions.length} already-logged transaction(s); ` +
-        'they were stripped before responding. This is a bug in diffTellerTransactions().'
+        `${newTransactions.length - safeTransactions.length} already-logged or dismissed ` +
+        'transaction(s); they were stripped before responding. ' +
+        'This is a bug in diffTellerTransactions().'
       );
       summary.newCount = safeTransactions.length;
     }
@@ -228,7 +242,8 @@ exports.getTellerTransactions = async (req, res) => {
 
     console.log(
       `[GET /teller/transactions] fetched=${summary.fetched} ` +
-      `alreadyLogged=${summary.alreadyLogged} excluded=${summary.excluded} ` +
+      `alreadyLogged=${summary.alreadyLogged} ignored=${summary.ignored} ` +
+      `excluded=${summary.excluded} ` +
       `outsideWindow=${summary.outsideWindow} malformed=${summary.malformed} ` +
       `NEW=${summary.newCount} possibleDuplicates=${summary.possibleDuplicates}`
     );
@@ -241,6 +256,7 @@ exports.getTellerTransactions = async (req, res) => {
           windowStart,
           defaultLookbackDays: DEFAULT_LOOKBACK_DAYS,
           legacyWatermark,
+          totalIgnored: await IgnoredTransaction.countDocuments(),
           accounts: accountReports,
           // surfaced, never silent: coverage is incomplete for these accounts
           truncatedAccounts,

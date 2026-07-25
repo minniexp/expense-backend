@@ -239,6 +239,131 @@ test('a transaction exactly ON the window start is included (boundary is inclusi
 });
 
 // ---------------------------------------------------------------------------
+// ignored (dismissed) transactions
+// ---------------------------------------------------------------------------
+
+test('an ignored transaction is filtered out and counted', () => {
+  const result = diffTellerTransactions({
+    tellerTransactions: [
+      { cardName: 'Freedom', transaction: txn({ id: 'keep' }) },
+      { cardName: 'Freedom', transaction: txn({ id: 'dismissed' }) },
+    ],
+    loggedTransactions: [],
+    ignoredIds: ['dismissed'],
+    windowStart: '2026-01-01',
+  });
+
+  assert.deepStrictEqual(result.newTransactions.map((t) => t.tellerTransactionId), ['keep']);
+  assert.strictEqual(result.summary.ignored, 1);
+  assert.strictEqual(result.summary.newCount, 1);
+});
+
+test('ignoring is sticky across fetches — the whole point of the feature', () => {
+  const args = {
+    tellerTransactions: [{ cardName: 'Freedom', transaction: txn({ id: 'dismissed' }) }],
+    loggedTransactions: [],
+    ignoredIds: ['dismissed'],
+    windowStart: '2026-01-01',
+  };
+  for (let i = 0; i < 3; i++) {
+    assert.strictEqual(diffTellerTransactions(args).newTransactions.length, 0,
+      `fetch ${i + 1} must not re-offer a dismissed transaction`);
+  }
+});
+
+test('un-ignoring brings a transaction straight back', () => {
+  const tellerTransactions = [{ cardName: 'Freedom', transaction: txn({ id: 'x' }) }];
+  const hidden = diffTellerTransactions({
+    tellerTransactions, loggedTransactions: [], ignoredIds: ['x'], windowStart: '2026-01-01',
+  });
+  const restored = diffTellerTransactions({
+    tellerTransactions, loggedTransactions: [], ignoredIds: [], windowStart: '2026-01-01',
+  });
+  assert.strictEqual(hidden.newTransactions.length, 0);
+  assert.strictEqual(restored.newTransactions.length, 1, 'restoring must be a pure inverse');
+});
+
+test('a transaction that is BOTH saved and ignored counts once, as alreadyLogged', () => {
+  // Otherwise the summary would double-count and stop balancing against `fetched`.
+  const result = diffTellerTransactions({
+    tellerTransactions: [{ cardName: 'Freedom', transaction: txn({ id: 'both' }) }],
+    loggedTransactions: [logged({ tellerTransactionId: 'both' })],
+    ignoredIds: ['both'],
+    windowStart: '2026-01-01',
+  });
+  assert.strictEqual(result.summary.alreadyLogged, 1);
+  assert.strictEqual(result.summary.ignored, 0);
+  assert.strictEqual(result.newTransactions.length, 0);
+  assert.strictEqual(
+    result.summary.fetched,
+    result.summary.malformed + result.summary.outsideWindow + result.summary.excluded
+      + result.summary.alreadyLogged + result.summary.ignored + result.summary.newCount,
+    'summary must still balance'
+  );
+});
+
+test('ignoring never suppresses a DIFFERENT transaction that merely looks alike', () => {
+  // Ignore is keyed on transaction id only. Two identical same-day charges are both real
+  // (see the module header); dismissing one must not dismiss the other.
+  const result = diffTellerTransactions({
+    tellerTransactions: [
+      { cardName: 'Freedom', transaction: txn({ id: 'twin_a', date: '2026-03-24', amount: '21.03', description: 'GRILL' }) },
+      { cardName: 'Freedom', transaction: txn({ id: 'twin_b', date: '2026-03-24', amount: '21.03', description: 'GRILL' }) },
+    ],
+    loggedTransactions: [],
+    ignoredIds: ['twin_a'],
+    windowStart: '2026-01-01',
+  });
+  assert.deepStrictEqual(result.newTransactions.map((t) => t.tellerTransactionId), ['twin_b']);
+});
+
+test('an ignored id that Teller no longer returns is simply inert', () => {
+  const result = diffTellerTransactions({
+    tellerTransactions: [{ cardName: 'Freedom', transaction: txn({ id: 'present' }) }],
+    loggedTransactions: [],
+    ignoredIds: ['long_gone_1', 'long_gone_2'],
+    windowStart: '2026-01-01',
+  });
+  assert.strictEqual(result.newTransactions.length, 1);
+  assert.strictEqual(result.summary.ignored, 0, 'only ids actually seen this fetch are counted');
+});
+
+test('ignoredIds accepts a Set as well as an array', () => {
+  const result = diffTellerTransactions({
+    tellerTransactions: [{ cardName: 'Freedom', transaction: txn({ id: 'd' }) }],
+    loggedTransactions: [],
+    ignoredIds: new Set(['d']),
+    windowStart: '2026-01-01',
+  });
+  assert.strictEqual(result.newTransactions.length, 0);
+});
+
+test('omitting ignoredIds entirely keeps the previous behaviour', () => {
+  const result = diffTellerTransactions({
+    tellerTransactions: [{ cardName: 'Freedom', transaction: txn({ id: 'a' }) }],
+    loggedTransactions: [],
+    windowStart: '2026-01-01',
+  });
+  assert.strictEqual(result.newTransactions.length, 1);
+  assert.strictEqual(result.summary.ignored, 0);
+});
+
+test('an ignored transaction does not consume a duplicate-match slot', () => {
+  // The unclaimed DB row should still be available to flag the transaction that IS shown.
+  const result = diffTellerTransactions({
+    tellerTransactions: [
+      { cardName: 'Freedom', transaction: txn({ id: 'skipped', amount: '42.00' }) },
+      { cardName: 'Freedom', transaction: txn({ id: 'shown', amount: '42.00' }) },
+    ],
+    loggedTransactions: [logged({ tellerTransactionId: 'gone', amount: 42, paymentMethod: 'Freedom' })],
+    ignoredIds: ['skipped'],
+    windowStart: '2026-01-01',
+  });
+  assert.deepStrictEqual(result.newTransactions.map((t) => t.tellerTransactionId), ['shown']);
+  assert.strictEqual(result.newTransactions[0].possibleDuplicate, true);
+});
+
+// ---------------------------------------------------------------------------
 // count-aware duplicate flagging  (see the module header)
 // ---------------------------------------------------------------------------
 

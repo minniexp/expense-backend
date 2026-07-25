@@ -218,11 +218,19 @@ const DUPLICATE_DATE_TOLERANCE_DAYS = 3;
 function diffTellerTransactions({
   tellerTransactions = [],
   loggedTransactions = [],
+  ignoredIds = [],
   windowStart = null,
   userId = undefined,
   returnIdForMonth = defaultReturnIdForMonth,
 } = {}) {
   const windowStartMs = windowStart === null ? null : parseIsoDate(windowStart);
+
+  // Transactions the user reviewed and deliberately dismissed. Keyed on transaction id ONLY —
+  // never on a date/amount fingerprint. Two genuinely distinct charges can look identical, so
+  // fingerprint-based dismissal would silently swallow real spending the user never saw.
+  const ignoredIdSet = ignoredIds instanceof Set
+    ? ignoredIds
+    : new Set(Array.isArray(ignoredIds) ? ignoredIds.map(String) : []);
 
   const summary = {
     fetched: tellerTransactions.length,
@@ -230,6 +238,7 @@ function diffTellerTransactions({
     outsideWindow: 0,
     excluded: 0,
     alreadyLogged: 0,
+    ignored: 0,
     newCount: 0,
     possibleDuplicates: 0,
     pending: 0,
@@ -266,6 +275,12 @@ function diffTellerTransactions({
     }
     if (loggedIds.has(t.id)) {
       summary.alreadyLogged++;
+      continue;
+    }
+    // Checked after `alreadyLogged` so a transaction that is both saved and dismissed is
+    // counted exactly once, and the summary keeps balancing against `fetched`.
+    if (ignoredIdSet.has(t.id)) {
+      summary.ignored++;
       continue;
     }
 
