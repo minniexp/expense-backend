@@ -30,6 +30,10 @@ function expenseOut(e) {
     tax: fromCents(o.taxCents || 0),
     lineItems: (o.lineItems || []).map((li) => ({ ...li, amount: fromCents(li.amountCents) })),
     splits: (o.splits || []).map((s) => ({ ...s, amount: fromCents(s.amountCents) })),
+    // Also in dollars, so an edit form can be populated straight from this response without
+    // the client having to know that cents are the storage unit.
+    customSplits: (o.customSplits || []).map((c) => ({ ...c, amount: fromCents(c.amountCents) })),
+    guestStays: o.guestStays || [],
   };
 }
 
