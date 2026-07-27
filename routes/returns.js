@@ -17,6 +17,9 @@ router.delete('/:id', returnController.deleteReturn);
 // Get a return by id
 router.get('/:id', returnController.getReturnById);
 
+// Flip the payback confirmation flags without resending the whole document.
+router.patch('/:id/confirmation', returnController.setReturnConfirmation);
+
 // Add this route to your existing returns routes
 router.post('/migrate-transaction-ids', returnController.migrateReturnTransactionIds);
 

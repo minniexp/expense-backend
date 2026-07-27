@@ -310,4 +310,53 @@ exports.migrateReturnTransactionIds = async (req, res) => {
     console.error('Error in migrateReturnTransactionIds:', err);
     res.status(500).json({ message: err.message });
   }
-}; 
+};
+
+/**
+ * PATCH /api/returns/:id/confirmation
+ * Body: { payee?: boolean, lender?: boolean }
+ *
+ * Marks one or both payback confirmations on a return.
+ *
+ * A dedicated endpoint rather than reusing PUT /:id, because the existing update takes
+ * `req.body` wholesale and hands it to findByIdAndUpdate. Callers therefore had to send the
+ * ENTIRE return document back just to flip one boolean, and a client working from a stale copy
+ * would silently overwrite `total` or `returnedTransactionIds` with old values. Money and
+ * transaction links are not things to risk for the sake of a checkbox.
+ *
+ * This writes only the two flags, so nothing else on the document can be disturbed.
+ */
+exports.setReturnConfirmation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { payee, lender } = req.body || {};
+
+    if (payee === undefined && lender === undefined) {
+      return res.status(400).json({
+        message: 'Provide `payee` and/or `lender` as booleans.',
+      });
+    }
+    for (const [name, value] of [['payee', payee], ['lender', lender]]) {
+      if (value !== undefined && typeof value !== 'boolean') {
+        return res.status(400).json({ message: `\`${name}\` must be a boolean` });
+      }
+    }
+
+    const update = {};
+    if (payee !== undefined) update.paidBackConfirmationPayee = payee;
+    if (lender !== undefined) update.paidBackConfirmationLender = lender;
+
+    const updated = await Return.findByIdAndUpdate(
+      id,
+      { $set: update },          // $set, so no other field is touched
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ message: 'Return document not found' });
+
+    console.log(`[PATCH /returns/${id}/confirmation]`, update);
+    res.status(200).json(updated);
+  } catch (err) {
+    console.error('Error updating return confirmation:', err);
+    res.status(400).json({ message: err.message });
+  }
+};
