@@ -34,6 +34,7 @@ function loadCertMaterial() {
   const keyB64 = process.env.TELLER_KEY_B64;
 
   if (certB64 && keyB64) {
+    console.log('[teller] mTLS material: base64 env vars (TELLER_CERT_B64/TELLER_KEY_B64)');
     return {
       cert: Buffer.from(certB64, 'base64').toString('utf8'),
       key: Buffer.from(keyB64, 'base64').toString('utf8'),
@@ -43,6 +44,10 @@ function loadCertMaterial() {
   const certPath = path.join(__dirname, '../certs/certificate.pem');
   const keyPath = path.join(__dirname, '../certs/private_key.pem');
   if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    // Which source is in use is worth stating. Both work identically, but silence here means
+    // a stale base64 value can quietly win over a freshly replaced PEM file, and the two look
+    // the same from the outside until something fails.
+    console.log('[teller] mTLS material: PEM files in certs/');
     return {
       cert: fs.readFileSync(certPath),
       key: fs.readFileSync(keyPath),
