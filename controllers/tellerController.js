@@ -34,14 +34,31 @@ exports.getEnrollmentToken = async (req, res) => {
     const enrollmentId = process.env.TELLER_ENROLLMENT_ID || null;
     const environment = process.env.TELLER_ENV;
 
+    // Teller has THREE environments, and an enrollment exists in exactly one of them:
+    //   sandbox     — fake test data, free
+    //   development — REAL bank data, free, limited number of enrollments
+    //   production  — REAL bank data, requires payment setup on the Teller application
+    // Point Connect at the wrong one and it reports "an enrollment with that id could not be
+    // found", which reads like a bad id and is not. Real data plus an application without
+    // payment setup means "development", not "production".
+    const VALID_ENVIRONMENTS = ['sandbox', 'development', 'production'];
+
     const warnings = [];
     if (!environment) {
       warnings.push('TELLER_ENV is not set. Teller Connect needs to know which environment to '
-        + 'look the enrollment up in — set it to "production" or "sandbox".');
+        + 'look the enrollment up in — one of: ' + VALID_ENVIRONMENTS.join(', ') + '.');
+    } else if (!VALID_ENVIRONMENTS.includes(environment)) {
+      warnings.push(`TELLER_ENV is "${environment}", which is not a Teller environment. `
+        + 'Expected one of: ' + VALID_ENVIRONMENTS.join(', ') + '.');
     } else if (environment === 'sandbox' && enrollmentId) {
       warnings.push('TELLER_ENV is "sandbox" but an enrollment id is configured. If that '
-        + 'enrollment was created against real bank data it lives in "production", and Connect '
-        + 'will report that the enrollment cannot be found.');
+        + 'enrollment was created against real bank data it lives in "development" or '
+        + '"production", and Connect will report that the enrollment cannot be found.');
+    } else if (environment === 'production') {
+      warnings.push('TELLER_ENV is "production". That requires payment setup on the Teller '
+        + 'application; without it Connect reports "your application needs payment setup '
+        + 'before it can be used in production". If your enrollment is on the free tier with '
+        + 'real bank data, the correct value is "development".');
     }
     if (!process.env.TELLER_APPLICATION_ID) {
       warnings.push('TELLER_APPLICATION_ID is not set — Teller Connect cannot start.');
