@@ -16,19 +16,50 @@ let accessToken = null;
 
 const MS_PER_DAY = 86400000;
 
+/**
+ * Teller Connect widget configuration.
+ *
+ * `environment` matters more than it looks. It tells Teller Connect WHICH environment to look
+ * the enrollment up in, and enrollments do not exist across environments. Pointing Connect at
+ * `sandbox` while holding a production enrollment produces Teller's own error —
+ * "an enrollment with that id could not be found" — which reads like a bad or missing id and
+ * sends you hunting through the wrong config entirely. The id is fine; the lookup is happening
+ * in the wrong place.
+ *
+ * There is deliberately no default. Falling back to 'sandbox' is what allowed a production
+ * setup to silently misconfigure itself.
+ */
 exports.getEnrollmentToken = async (req, res) => {
   try {
     const enrollmentId = process.env.TELLER_ENROLLMENT_ID || null;
+    const environment = process.env.TELLER_ENV;
+
+    const warnings = [];
+    if (!environment) {
+      warnings.push('TELLER_ENV is not set. Teller Connect needs to know which environment to '
+        + 'look the enrollment up in — set it to "production" or "sandbox".');
+    } else if (environment === 'sandbox' && enrollmentId) {
+      warnings.push('TELLER_ENV is "sandbox" but an enrollment id is configured. If that '
+        + 'enrollment was created against real bank data it lives in "production", and Connect '
+        + 'will report that the enrollment cannot be found.');
+    }
+    if (!process.env.TELLER_APPLICATION_ID) {
+      warnings.push('TELLER_APPLICATION_ID is not set — Teller Connect cannot start.');
+    }
+    warnings.forEach((w) => console.warn('[GET /enrollment-config] ' + w));
+
     console.log('[GET /enrollment-config]', {
       applicationIdSet: Boolean(process.env.TELLER_APPLICATION_ID),
-      environment: process.env.TELLER_ENV || 'sandbox',
+      environment: environment || '(unset)',
       enrollmentIdSet: Boolean(enrollmentId),
       enrollmentIdValue: enrollmentId,
     });
+
     res.json({
       applicationId: process.env.TELLER_APPLICATION_ID,
-      environment: process.env.TELLER_ENV || 'sandbox',
+      environment,
       enrollmentId,
+      warnings,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
