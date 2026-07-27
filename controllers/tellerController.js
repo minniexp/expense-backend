@@ -65,11 +65,13 @@ exports.getEnrollmentToken = async (req, res) => {
     }
     warnings.forEach((w) => console.warn('[GET /enrollment-config] ' + w));
 
+    // Log whether things are configured, never the values. These identify the bank
+    // connection, and server logs are the easiest place for them to end up somewhere
+    // unintended — a Vercel log stream, a pasted stack trace, a screenshot.
     console.log('[GET /enrollment-config]', {
       applicationIdSet: Boolean(process.env.TELLER_APPLICATION_ID),
       environment: environment || '(unset)',
       enrollmentIdSet: Boolean(enrollmentId),
-      enrollmentIdValue: enrollmentId,
     });
 
     res.json({
