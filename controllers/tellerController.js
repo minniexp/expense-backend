@@ -156,9 +156,17 @@ exports.getTellerTransactions = async (req, res) => {
           'results are incomplete for this account'
         );
       }
+      // Freshness. A Teller enrollment can stop syncing with the bank while still reporting
+      // status=open and happily serving the data it already has. From the app's side that is
+      // indistinguishable from "you have no new spending" — which is exactly how a broken bank
+      // connection gets mistaken for a filtering bug.
+      const dates = r.transactions.map((t) => t && t.date).filter(Boolean).sort();
+      const newestDate = dates.length ? dates[dates.length - 1] : null;
+
       accountReports.push({
         card: r.cardName,
         fetched: r.transactions.length,
+        newestDate,
         pages: r.pages,
         truncated: r.truncated,
         rateLimited: r.rateLimited,
@@ -236,6 +244,14 @@ exports.getTellerTransactions = async (req, res) => {
       summary.newCount = safeTransactions.length;
     }
 
+    // Days since the most recent transaction Teller knows about, across all accounts.
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const newestOverall = accountReports
+      .map((a) => a.newestDate).filter(Boolean).sort().pop() || null;
+    const staleDays = newestOverall
+      ? Math.round((Date.parse(todayIso) - Date.parse(newestOverall)) / 86400000)
+      : null;
+
     const truncatedAccounts = accountReports.filter((a) => a.truncated).map((a) => a.card);
     const failedAccounts = accountReports.filter((a) => a.error).map((a) => a.card);
     const rateLimitedAccounts = accountReports.filter((a) => a.rateLimited).map((a) => a.card);
@@ -256,6 +272,8 @@ exports.getTellerTransactions = async (req, res) => {
           windowStart,
           defaultLookbackDays: DEFAULT_LOOKBACK_DAYS,
           legacyWatermark,
+          newestTransactionDate: newestOverall,
+          staleDays,
           totalIgnored: await IgnoredTransaction.countDocuments(),
           accounts: accountReports,
           // surfaced, never silent: coverage is incomplete for these accounts
