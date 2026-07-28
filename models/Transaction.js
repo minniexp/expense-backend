@@ -10,6 +10,14 @@ const transactionSchema = new mongoose.Schema({
     type: String,
     required: false
   },
+  // Where the row came from. The id field above is still the dedupe key for every source —
+  // renaming it would mean a migration across every consumer — so this records provenance
+  // explicitly now that transactions arrive from more than one place.
+  source: {
+    type: String,
+    enum: ['teller', 'manual', 'phone', 'csv'],
+    required: false
+  },
 
   // Date Information
   year: {

@@ -100,8 +100,46 @@ const requireInternalSecret = (req, res, next) => {
   next();
 };
 
+/**
+ * Require the phone's ingest token.
+ *
+ * Deliberately a SEPARATE credential from JWT_SECRET and INTERNAL_API_SECRET. It lives in a
+ * Shortcut on a phone, which is a far more losable place than a server environment, so it must
+ * be revocable on its own — rotating it should not log anyone out or break the website.
+ *
+ * It guards a create-only route. Someone holding this token can add ledger rows; they cannot
+ * read bank data, read the ledger, or delete anything.
+ */
+const requireIngestToken = (req, res, next) => {
+  const expected = process.env.INGEST_TOKEN;
+
+  // Fail closed. An unset token must never mean "allow everyone" — that is precisely how the
+  // authentication bypass this codebase already had came to exist.
+  if (!expected || expected.length < 32) {
+    console.error('INGEST_TOKEN is missing or too short (need >= 32 chars) — refusing');
+    return res.status(503).json({ error: 'Ingest is not configured on this server' });
+  }
+
+  const header = req.headers.authorization || '';
+  const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
+
+  if (provided.length !== expected.length) {
+    console.warn('[ingest] rejected: token length mismatch');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    console.warn('[ingest] rejected: bad token');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  next();
+};
+
 module.exports = {
   validateToken,
   requireAdvancedAccess,
-  requireInternalSecret
+  requireInternalSecret,
+  requireIngestToken
 };

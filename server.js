@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
-const { validateToken, requireAdvancedAccess, requireInternalSecret } = require('./middleware/authMiddleware');
-const { tellerRateLimit } = require('./middleware/rateLimit');
+const { validateToken, requireAdvancedAccess, requireInternalSecret, requireIngestToken } = require('./middleware/authMiddleware');
+const { tellerRateLimit, createRateLimit } = require('./middleware/rateLimit');
 require('dotenv').config();
 
 const app = express();
@@ -155,6 +155,20 @@ app.use('/api/returns', requireInternalSecret, validateToken, require('./routes/
 // Trip expense splitter. Same two controls as the rest of the data surface: only our own
 // Next.js server can reach it, and it must still present a valid session.
 app.use('/api/trips', requireInternalSecret, validateToken, require('./routes/trips'));
+
+// Transactions submitted from outside the web UI (an iOS Shortcut, today).
+//
+// Guarded by BOTH the internal secret and the ingest token, so it is unreachable from the open
+// internet AND still requires the phone's own credential. Notably it does NOT use
+// validateToken: a phone has no session, and issuing it one would mean handing it a
+// full-access token that expires weekly. A narrow create-only credential is the smaller risk.
+app.use(
+  '/api/ingest',
+  requireInternalSecret,
+  requireIngestToken,
+  createRateLimit({ name: 'ingest', windowMs: 60 * 60 * 1000, max: Number(process.env.INGEST_RATE_LIMIT_MAX) || 120 }),
+  require('./routes/ingest')
+);
 
 // Advanced user routes - require token validation and advanced access
 app.use('/api/pending-transactions', requireInternalSecret, validateToken, requireAdvancedAccess, require('./routes/pendingTransactions'));
