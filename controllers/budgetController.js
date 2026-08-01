@@ -5,7 +5,7 @@ const { summariseBudgets } = require('../services/budgetSummary');
 /** Whose budget. The same person the ingest path writes for. */
 const ownerId = (req) => (req.user && req.user.userId) || process.env.MINID;
 
-/** GET /api/budgets — the monthly allowance for each purchase category. */
+/** GET /api/budgets — the monthly allowance for each budget category. */
 exports.getBudgets = async (req, res) => {
   try {
     const doc = await Budget.findOne({ userId: ownerId(req) }).lean();
@@ -65,7 +65,7 @@ exports.getSummary = async (req, res) => {
     const [doc, transactions] = await Promise.all([
       Budget.findOne({ userId: ownerId(req) }).lean(),
       Transaction.find({ year, month: { $lte: month }, transactionType: 'expense' })
-        .select('year month amount transactionType purchaseCategory')
+        .select('year month amount transactionType category')
         .lean(),
     ]);
 

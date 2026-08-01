@@ -1,5 +1,5 @@
 /**
- * Spending against a rolling monthly budget, per purchase category.
+ * Spending against a rolling monthly budget, per main category.
  *
  * Three numbers per category, which answer three different questions:
  *
@@ -17,20 +17,20 @@
  * month's figure cannot show that; a running total is the only thing that does.
  */
 
-/** Spending with no purchase category still has to appear somewhere. */
+/** Spending with no category still has to appear somewhere. */
 const UNCATEGORISED = 'etc.';
 
 /**
  * Which budget a transaction draws from.
  *
- * The FIRST purchase category, not all of them. `purchaseCategory` is an array, and a purchase
- * tagged both dining and travel would otherwise be counted twice — the totals would exceed what was
- * actually spent, which is the one thing a budget must never do.
+ * The main `category` field, not `purchaseCategory` — a transaction has exactly one of the former
+ * and any number of the latter, so keying on it means nothing is ever double-counted, and a budget
+ * of "travel" or "fuel" (which exist as a purchase-category tag too) unambiguously means the main
+ * category, not the tag.
  */
 function budgetCategoryOf(transaction) {
-  const tags = (transaction && transaction.purchaseCategory) || [];
-  const first = Array.isArray(tags) ? tags.find((t) => typeof t === 'string' && t.trim()) : null;
-  return first ? first.trim() : UNCATEGORISED;
+  const category = transaction && typeof transaction.category === 'string' ? transaction.category.trim() : '';
+  return category || UNCATEGORISED;
 }
 
 /**
@@ -94,7 +94,7 @@ function summariseBudgets({ transactions = [], budgets = {}, year, month } = {})
       const current = currentByCategory.get(name) || 0;
       const yearToDate = yearToDateByCategory.get(name) || 0;
       return {
-        purchaseCategory: name,
+        category: name,
         current: round2(current),
         budgeted: round2(monthlyBudget),
         yearToDate: round2(yearToDate),
@@ -104,8 +104,8 @@ function summariseBudgets({ transactions = [], budgets = {}, year, month } = {})
       };
     })
     // Drop the placeholder when nothing is uncategorised and nothing budgets for it.
-    .filter((c) => !(c.purchaseCategory === UNCATEGORISED && c.yearToDate === 0 && c.budgeted === 0))
-    .sort((a, b) => b.current - a.current || a.purchaseCategory.localeCompare(b.purchaseCategory));
+    .filter((c) => !(c.category === UNCATEGORISED && c.yearToDate === 0 && c.budgeted === 0))
+    .sort((a, b) => b.current - a.current || a.category.localeCompare(b.category));
 
   const totals = categories.reduce(
     (acc, c) => ({
