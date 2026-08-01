@@ -1,6 +1,6 @@
 const Transaction = require('../models/Transaction');
 const {
-  buildManualTransaction, deriveTransactionId, parseCardLast4Map,
+  buildManualTransaction, deriveTransactionId, parseCardLast4Map, isSameTransaction,
 } = require('../services/manualTransaction');
 
 /**
@@ -32,6 +32,24 @@ const returnIdForMonth = (year, month) => {
  *   - if the base id already exists AND `allowDuplicate` was requested, take the next ordinal
  *   - otherwise reuse the base id, which makes a retried request upsert rather than duplicate
  */
+/**
+ * The row this one would duplicate, if there is one.
+ *
+ * Narrowed in the query on the three fields Mongo can compare exactly, then finished in JavaScript
+ * so the description is judged by the same rule the id derivation uses — case-insensitive, runs of
+ * whitespace collapsed. Doing that half in a regex would mean escaping arbitrary merchant text into
+ * a pattern, which is a worse problem than fetching a handful of rows.
+ */
+async function findDuplicate(record) {
+  const candidates = await Transaction.find({
+    date: record.date,
+    amount: record.amount,
+    transactionType: record.transactionType,
+  }).lean();
+
+  return candidates.find((existing) => isSameTransaction(record, existing)) || null;
+}
+
 async function resolveOrdinal(candidate, allowDuplicate) {
   if (!allowDuplicate) return 0;
   for (let ordinal = 0; ordinal < 50; ordinal++) {
@@ -93,6 +111,7 @@ exports.ingestTransactions = async (req, res) => {
     }
 
     const saved = [];
+    const duplicates = [];
     const errors = [];
 
     // Parsed once per request, and passed to BOTH buildManualTransaction calls below. The second
@@ -124,6 +143,24 @@ exports.ingestTransactions = async (req, res) => {
         continue;
       }
 
+      // Leave an existing row completely alone.
+      //
+      // The upsert below is keyed on the derived id, so a re-sent alert was never going to create a
+      // second row — but it would `$set` over the top of one, and that is the real damage: the
+      // category you chose in /my, the note you added, the reviewed flag you ticked, all replaced
+      // by what the classifier guessed the first time. Re-sending an alert must not undo work done
+      // by hand, so a match is skipped rather than written.
+      //
+      // `allowDuplicate` still forces a save. Two genuinely identical purchases on one day are real
+      // — eleven such groups exist in this ledger — and that flag is how you say so.
+      if (!(item && item.allowDuplicate)) {
+        const existing = await findDuplicate(record);
+        if (existing) {
+          duplicates.push({ index, transaction: existing });
+          continue;
+        }
+      }
+
       // Upsert on the derived id, so a retried request updates the same row rather than
       // creating a second one. This is what makes the endpoint safe to call from a phone on a
       // flaky connection.
@@ -146,17 +183,26 @@ exports.ingestTransactions = async (req, res) => {
     // Never log the payload's amounts or descriptions — this runs on a hosted log stream.
     console.log(`[POST /ingest/transaction] received=${items.length} `
       + `saved=${saved.length} created=${saved.filter((s) => s.created).length} `
-      + `errors=${errors.length}`);
+      + `duplicates=${duplicates.length} errors=${errors.length}`);
 
-    if (saved.length === 0) {
+    // Only a genuine failure is a 400. A payload that was already logged asked for nothing to
+    // change and nothing changed, which is the outcome it wanted — reporting that as an error
+    // would train whoever sent it to ignore errors.
+    if (saved.length === 0 && duplicates.length === 0) {
       return res.status(400).json({ message: 'Nothing was saved.', errors });
     }
 
-    res.status(201).json({
-      message: `Saved ${saved.length} transaction(s).`,
+    const parts = [];
+    if (saved.length) parts.push(`Saved ${saved.length} transaction(s).`);
+    if (duplicates.length) parts.push(`${duplicates.length} already logged.`);
+
+    res.status(saved.length > 0 ? 201 : 200).json({
+      message: parts.join(' '),
       created: saved.filter((s) => s.created).length,
       updated: saved.filter((s) => !s.created).length,
+      duplicates: duplicates.length,
       transactions: saved.map((s) => s.transaction),
+      ...(duplicates.length ? { duplicateOf: duplicates.map((d) => d.transaction) } : {}),
       ...(errors.length ? { errors } : {}),
     });
   } catch (err) {

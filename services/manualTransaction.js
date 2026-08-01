@@ -337,11 +337,37 @@ function normalizeAmountSign(amount, paymentMethod, transactionType) {
  * groups of real transactions sharing card, date, amount and description — collapsing those
  * would delete real spending.
  */
+/**
+ * A description reduced to what actually distinguishes it.
+ *
+ * Case and runs of whitespace are noise — "WWW.SWAN-DIVEPILATES" and "www.swan-divepilates" are
+ * the same merchant, and a forwarded email may re-wrap the line. Shared by the id derivation and
+ * the duplicate check so the two can never disagree about what "the same description" means.
+ */
+function normalizeDescriptionKey(description) {
+  return String(description || '').trim().toUpperCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Whether two rows describe the same transaction.
+ *
+ * Date, amount, description and direction — deliberately NOT the payment method, which the id
+ * derivation does include. An alert re-sent after the card map changed, or one sent once with an
+ * explicit account and once without, is still the same purchase and must not be logged twice.
+ */
+function isSameTransaction(a, b) {
+  if (!a || !b) return false;
+  return String(a.date) === String(b.date)
+    && Number(a.amount) === Number(b.amount)
+    && String(a.transactionType) === String(b.transactionType)
+    && normalizeDescriptionKey(a.description) === normalizeDescriptionKey(b.description);
+}
+
 function deriveTransactionId({ date, amount, description, paymentMethod }, ordinal = 0) {
   const canonical = [
     String(date || ''),
     Math.abs(Number(amount) || 0).toFixed(2),
-    String(description || '').trim().toUpperCase().replace(/\s+/g, ' '),
+    normalizeDescriptionKey(description),
     String(paymentMethod || ''),
   ].join('|');
   const hash = crypto.createHash('sha256').update(canonical).digest('hex').slice(0, 20);
@@ -529,6 +555,8 @@ module.exports = {
   parseTime,
   parseAmount,
   normalizeAmountSign,
+  normalizeDescriptionKey,
+  isSameTransaction,
   deriveTransactionId,
   buildManualTransaction,
 };
