@@ -7,3 +7,7 @@ teller-key.pem
 .claude/
 .next/
 .vercel
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
