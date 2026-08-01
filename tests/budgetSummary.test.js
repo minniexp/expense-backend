@@ -11,12 +11,12 @@ const assert = require('node:assert');
 
 const { UNCATEGORISED, budgetCategoryOf, spendOf, summariseBudgets } = require('../services/budgetSummary');
 
-const spend = (month, amount, tags, over = {}) => ({
+const spend = (month, amount, category, over = {}) => ({
   year: 2026, month, date: `2026-${String(month).padStart(2, '0')}-15`,
-  amount, transactionType: 'expense', purchaseCategory: tags, ...over,
+  amount, transactionType: 'expense', category, ...over,
 });
 
-const find = (result, name) => result.categories.find((c) => c.purchaseCategory === name);
+const find = (result, name) => result.categories.find((c) => c.category === name);
 
 // ---------------------------------------------------------------------------
 // the worked example
@@ -24,7 +24,7 @@ const find = (result, name) => result.categories.find((c) => c.purchaseCategory 
 
 test('THE WORKED EXAMPLE: travel in March, $300/month, $609.37 spent in January', () => {
   const result = summariseBudgets({
-    transactions: [spend(1, 609.37, ['travel'])],
+    transactions: [spend(1, 609.37, 'travel')],
     budgets: { travel: 300 },
     year: 2026,
     month: 3,
@@ -38,7 +38,7 @@ test('THE WORKED EXAMPLE: travel in March, $300/month, $609.37 spent in January'
 
 test('an underspent month carries its remainder forward', () => {
   const result = summariseBudgets({
-    transactions: [spend(1, 100, ['travel'])],
+    transactions: [spend(1, 100, 'travel')],
     budgets: { travel: 300 },
     year: 2026, month: 2,
   });
@@ -48,7 +48,7 @@ test('an underspent month carries its remainder forward', () => {
 test('an overspent month goes negative rather than resetting to zero', () => {
   // Clamping at zero would make the next month look funded when it is not.
   const result = summariseBudgets({
-    transactions: [spend(1, 1000, ['travel'])],
+    transactions: [spend(1, 1000, 'travel')],
     budgets: { travel: 300 },
     year: 2026, month: 2,
   });
@@ -57,7 +57,7 @@ test('an overspent month goes negative rather than resetting to zero', () => {
 
 test('the current month counts toward accumulated as well as toward current', () => {
   const result = summariseBudgets({
-    transactions: [spend(1, 100, ['travel']), spend(3, 50, ['travel'])],
+    transactions: [spend(1, 100, 'travel'), spend(3, 50, 'travel')],
     budgets: { travel: 300 },
     year: 2026, month: 3,
   });
@@ -73,8 +73,8 @@ test('the current month counts toward accumulated as well as toward current', ()
 test('income is not spending, whichever way its sign runs', () => {
   const result = summariseBudgets({
     transactions: [
-      { ...spend(3, 500, ['travel']), transactionType: 'income' },
-      spend(3, 40, ['travel']),
+      { ...spend(3, 500, 'travel'), transactionType: 'income' },
+      spend(3, 40, 'travel'),
     ],
     budgets: { travel: 300 }, year: 2026, month: 3,
   });
@@ -90,9 +90,9 @@ test('a negative stored amount is still spending of that magnitude', () => {
 test('later months and other years are excluded', () => {
   const result = summariseBudgets({
     transactions: [
-      spend(1, 100, ['travel']),
-      spend(6, 999, ['travel']),                       // after the month asked about
-      { ...spend(1, 888, ['travel']), year: 2025 },    // a different year
+      spend(1, 100, 'travel'),
+      spend(6, 999, 'travel'),                       // after the month asked about
+      { ...spend(1, 888, 'travel'), year: 2025 },    // a different year
     ],
     budgets: { travel: 300 }, year: 2026, month: 3,
   });
@@ -103,28 +103,29 @@ test('later months and other years are excluded', () => {
 // which budget a purchase draws from
 // ---------------------------------------------------------------------------
 
-test('only the FIRST purchase category is charged, so nothing is counted twice', () => {
-  // Counting a dining-and-travel purchase against both would report more spending than happened.
+test('a transaction is charged to its main category, not its purchase-category tags', () => {
+  // purchaseCategory is an array of tags and can hold several; category is the one budget it draws
+  // from, so a dining-tagged travel purchase still only counts once.
   const result = summariseBudgets({
-    transactions: [spend(3, 90, ['dining', 'travel'])],
-    budgets: { dining: 100, travel: 300 }, year: 2026, month: 3,
+    transactions: [spend(3, 90, 'travel', { purchaseCategory: ['dining', 'hotel'] })],
+    budgets: { travel: 300, bill: 100 }, year: 2026, month: 3,
   });
-  assert.strictEqual(find(result, 'dining').current, 90);
-  assert.strictEqual(find(result, 'travel').current, 0);
+  assert.strictEqual(find(result, 'travel').current, 90);
   assert.strictEqual(result.totals.current, 90, 'the total equals what was spent');
 });
 
-test('spending with no purchase category lands in "etc."', () => {
+test('spending with no category lands in "etc."', () => {
   const result = summariseBudgets({
-    transactions: [spend(3, 25, []), spend(3, 5, null), spend(3, 10, ['  '])],
+    transactions: [spend(3, 25, ''), spend(3, 5, null), spend(3, 10, '   ')],
     budgets: {}, year: 2026, month: 3,
   });
   assert.strictEqual(find(result, UNCATEGORISED).current, 40);
 });
 
 test('budgetCategoryOf never returns an empty name', () => {
-  assert.strictEqual(budgetCategoryOf({ purchaseCategory: ['dining'] }), 'dining');
-  assert.strictEqual(budgetCategoryOf({ purchaseCategory: [] }), UNCATEGORISED);
+  assert.strictEqual(budgetCategoryOf({ category: 'fuel' }), 'fuel');
+  assert.strictEqual(budgetCategoryOf({ category: '' }), UNCATEGORISED);
+  assert.strictEqual(budgetCategoryOf({ category: '   ' }), UNCATEGORISED);
   assert.strictEqual(budgetCategoryOf({}), UNCATEGORISED);
   assert.strictEqual(budgetCategoryOf(null), UNCATEGORISED);
 });
@@ -134,32 +135,32 @@ test('budgetCategoryOf never returns an empty name', () => {
 // ---------------------------------------------------------------------------
 
 test('a budgeted category with no spending still appears, showing its allowance', () => {
-  const result = summariseBudgets({ transactions: [], budgets: { hotel: 250 }, year: 2026, month: 4 });
-  const hotel = find(result, 'hotel');
-  assert.strictEqual(hotel.current, 0);
-  assert.strictEqual(hotel.budgeted, 250);
-  assert.strictEqual(hotel.accumulated, 1000);
+  const result = summariseBudgets({ transactions: [], budgets: { bill: 250 }, year: 2026, month: 4 });
+  const bill = find(result, 'bill');
+  assert.strictEqual(bill.current, 0);
+  assert.strictEqual(bill.budgeted, 250);
+  assert.strictEqual(bill.accumulated, 1000);
 });
 
 test('the "etc." placeholder is dropped when nothing is uncategorised', () => {
   const result = summariseBudgets({
-    transactions: [spend(3, 10, ['dining'])], budgets: { dining: 50 }, year: 2026, month: 3,
+    transactions: [spend(3, 10, 'personal')], budgets: { personal: 50 }, year: 2026, month: 3,
   });
   assert.strictEqual(find(result, UNCATEGORISED), undefined);
 });
 
 test('categories come back ordered by what was spent this month', () => {
   const result = summariseBudgets({
-    transactions: [spend(3, 10, ['dining']), spend(3, 90, ['travel']), spend(3, 50, ['fuel'])],
+    transactions: [spend(3, 10, 'personal'), spend(3, 90, 'travel'), spend(3, 50, 'fuel')],
     budgets: {}, year: 2026, month: 3,
   });
-  assert.deepStrictEqual(result.categories.map((c) => c.purchaseCategory), ['travel', 'fuel', 'dining']);
+  assert.deepStrictEqual(result.categories.map((c) => c.category), ['travel', 'fuel', 'personal']);
 });
 
 test('totals add up across categories', () => {
   const result = summariseBudgets({
-    transactions: [spend(1, 100, ['travel']), spend(3, 40, ['dining'])],
-    budgets: { travel: 300, dining: 50 }, year: 2026, month: 3,
+    transactions: [spend(1, 100, 'travel'), spend(3, 40, 'personal')],
+    budgets: { travel: 300, personal: 50 }, year: 2026, month: 3,
   });
   assert.strictEqual(result.totals.current, 40);
   assert.strictEqual(result.totals.budgeted, 350);
@@ -169,7 +170,7 @@ test('totals add up across categories', () => {
 
 test('money is rounded to cents, not left with floating-point crumbs', () => {
   const result = summariseBudgets({
-    transactions: [spend(1, 0.1, ['travel']), spend(1, 0.2, ['travel'])],
+    transactions: [spend(1, 0.1, 'travel'), spend(1, 0.2, 'travel')],
     budgets: { travel: 1 }, year: 2026, month: 1,
   });
   assert.strictEqual(find(result, 'travel').current, 0.3);
