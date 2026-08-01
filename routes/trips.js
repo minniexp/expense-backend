@@ -8,6 +8,10 @@ router.post('/members', c.createMember);
 router.put('/members/:id', c.updateMember);
 router.delete('/members/:id', c.deleteMember);
 
+// Which ledger rows belong to a trip. Declared before `/:id` so "transaction-links" is not read
+// as a trip id.
+router.post('/transaction-links', c.transactionTripLinks);
+
 // Trips
 router.get('/', c.listTrips);
 router.post('/', c.createTrip);

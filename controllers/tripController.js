@@ -267,6 +267,45 @@ function buildSplitInput(body, trip) {
   };
 }
 
+/**
+ * POST /api/trips/transaction-links   Body: { tellerTransactionIds: [...] }
+ *
+ * Which of these ledger rows belong to a trip, and which trip.
+ *
+ * One request rather than walking every trip's expenses, because the ledger view asks this about a
+ * whole screen of transactions at once and the N+1 version would be a request per trip.
+ */
+const MAX_LINK_LOOKUP = 500;
+
+exports.transactionTripLinks = async (req, res) => {
+  try {
+    const ids = req.body && req.body.tellerTransactionIds;
+    if (!Array.isArray(ids)) {
+      return oops(res, 400, 'Send { tellerTransactionIds: [...] }');
+    }
+    const wanted = [...new Set(ids.filter((id) => typeof id === 'string' && id))]
+      .slice(0, MAX_LINK_LOOKUP);
+    if (wanted.length === 0) return res.json([]);
+
+    const expenses = await TripExpense.find({ tellerTransactionId: { $in: wanted } })
+      .select('tripId tellerTransactionId description')
+      .lean();
+    if (expenses.length === 0) return res.json([]);
+
+    const trips = await Trip.find({ _id: { $in: expenses.map((e) => e.tripId) } })
+      .select('name status')
+      .lean();
+    const nameById = new Map(trips.map((t) => [String(t._id), t.name]));
+
+    res.json(expenses.map((e) => ({
+      tellerTransactionId: e.tellerTransactionId,
+      tripId: String(e.tripId),
+      tripName: nameById.get(String(e.tripId)) || 'Unknown trip',
+      expenseDescription: e.description,
+    })));
+  } catch (err) { oops(res, 500, err.message); }
+};
+
 exports.listExpenses = async (req, res) => {
   try {
     const { tripId } = req.params;
