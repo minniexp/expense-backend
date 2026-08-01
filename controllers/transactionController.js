@@ -3,6 +3,7 @@ const Transaction = require('../models/Transaction');
 const Return = require('../models/Return');
 const PendingTransactions = require('../models/PendingTransactions');
 const { planReturnUnlink } = require('../services/returnUnlink');
+const { sortNewestFirst } = require('../services/transactionSort');
 
 const getReturnIdForMonth = (year, month) => {
   const monthMap = {
@@ -54,7 +55,9 @@ exports.getTransactions = async (req, res) => {
       return transaction;
     });
 
-    res.json(enhancedTransactions);
+    // Mongo's `sort({ date: -1 })` above settles the day and says nothing about what happens
+    // within it. This settles the rest, and is the same comparator every other endpoint uses.
+    res.json(sortNewestFirst(enhancedTransactions));
   } catch (err) {
     console.error('Error getting transactions:', err);
     res.status(500).json({ message: err.message });
@@ -72,9 +75,9 @@ exports.getMonthTransactions = async (req, res) => {
         $gte: startDate,
         $lte: endDate
       }
-    }).sort({ date: 1 });
+    }).lean();
 
-    res.json(transactions);
+    res.json(sortNewestFirst(transactions));
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
@@ -449,9 +452,11 @@ exports.getTransactionsByIds = async (req, res) => {
     
     const transactions = await Transaction.find({
       _id: { $in: ids }
-    }).sort({ date: -1 });
-    
-    res.json(transactions);
+    }).lean();
+
+    // Same order as everywhere else. The payee summary renders this list straight out, so the
+    // ordering has to arrive correct — it does no sorting of its own.
+    res.json(sortNewestFirst(transactions));
   } catch (err) {
     console.error('Error fetching transactions by IDs:', err);
     res.status(500).json({ message: err.message });
