@@ -103,25 +103,80 @@ const MONTH_ABBREVIATIONS = {
 };
 
 /**
- * "Jul 29, 2026" -> "2026-07-29", or null if it is not that shape.
+ * The date line of an alert, as Chase writes it, split into its parts.
  *
- * Chase writes the date in prose, so something has to convert it. Doing it here rather than in the
- * Shortcut removes two actions from the phone and puts the conversion somewhere it can be tested.
+ *   "Jul 29, 2026"                 -> { date: '2026-07-29', time: '' }
+ *   "Aug 1, 2026 at 1:36 AM"       -> { date: '2026-08-01', time: '1:36 AM' }
+ *   "Jul 29, 2026 at 8:51 PM ET"   -> { date: '2026-07-29', time: '8:51 PM ET' }
+ *
+ * The trailing clock time is optional because the alert row reads "Aug 1, 2026 at 1:36 AM" as one
+ * string, and a sender that captures that row whole should not be punished for it — requiring the
+ * date alone made a correct-looking Shortcut fail with nothing to show for it. When the time comes
+ * along it is kept rather than discarded, so the phone need not extract it separately.
  *
  * Tolerates the full month name, a trailing dot, and a missing comma ("September 3 2026",
  * "Sept. 3, 2026"). Deliberately does NOT validate the calendar — it composes the string and lets
  * the existing parseIsoDate check reject 30 February, so there is one date validator, not two.
  */
-function parseAlertDate(value) {
+const ALERT_DATE = new RegExp(
+  '^\\s*([A-Za-z]{3,9})\\.?\\s+(\\d{1,2})\\s*,?\\s+(\\d{4})'      // Jul 29, 2026
+  + '(?:\\s+at\\s+(\\d{1,2}:\\d{2}\\s*[AP]M)(?:\\s+([A-Za-z]{2,4}))?)?'  // at 8:51 PM ET
+  + '\\s*$',
+  'i'
+);
+
+function splitAlertDateText(value) {
   if (typeof value !== 'string') return null;
-  const match = /^\s*([A-Za-z]{3,9})\.?\s+(\d{1,2})\s*,?\s+(\d{4})\s*$/.exec(value);
+  const match = ALERT_DATE.exec(value);
   if (!match) return null;
 
   const month = MONTH_ABBREVIATIONS[match[1].slice(0, 3).toLowerCase()];
   if (!month) return null;
 
   const pad = (n) => String(n).padStart(2, '0');
-  return `${match[3]}-${pad(month)}-${pad(Number(match[2]))}`;
+  const clock = match[4] ? match[4].replace(/\s+/g, ' ').toUpperCase() : '';
+  const zone = match[5] ? ` ${match[5].toUpperCase()}` : '';
+
+  return {
+    date: `${match[3]}-${pad(month)}-${pad(Number(match[2]))}`,
+    time: clock ? `${clock}${zone}` : '',
+  };
+}
+
+/** Just the date part. Kept as its own export because that is what most callers want. */
+function parseAlertDate(value) {
+  const parts = splitAlertDateText(value);
+  return parts ? parts.date : null;
+}
+
+/**
+ * Field labels a sender may have captured alongside the value they meant to send.
+ *
+ * A Shortcut that takes the whole regex match rather than its capture group produces
+ * "Merchant\nWWW.SWAN-DIVEPILATES". Requiring a newline or column-width whitespace after the label
+ * is what makes stripping it safe: a real merchant called "MERCHANT SERVICES CO" is separated by a
+ * single space and is left alone.
+ */
+const CAPTURED_LABEL = /^\s*(?:Merchant|Description|Amount)(?:\s*\r?\n|[ \t]{2,})\s*/i;
+
+/**
+ * The description, with an accidentally-captured label removed.
+ *
+ * Takes the last non-empty line first, which handles the label-on-its-own-line case with no risk at
+ * all — a merchant name never spans lines. Only then is a same-line label considered.
+ */
+const BARE_LABEL = /^(?:merchant|description|amount|date|account)$/i;
+
+function cleanDescription(value) {
+  if (typeof value !== 'string') return '';
+  const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const last = lines.length ? lines[lines.length - 1] : '';
+  const cleaned = last.replace(CAPTURED_LABEL, '').trim();
+
+  // Nothing but a label means the sender's pattern matched the row and missed the value. Storing
+  // a transaction described as "Merchant" would be a silent lie in the ledger, and with no bank
+  // feed to contradict it, one nobody would ever catch. Blank it so the caller rejects it.
+  return BARE_LABEL.test(cleaned) ? '' : cleaned;
 }
 
 /**
@@ -164,13 +219,17 @@ function normalizeIngestInput(input) {
   }
 
   if (raw.DateText !== undefined && raw.date === undefined) {
-    const iso = parseAlertDate(raw.DateText);
-    if (iso === null) {
+    const parts = splitAlertDateText(raw.DateText);
+    if (parts === null) {
       throw new Error(
-        `Invalid DateText: ${JSON.stringify(raw.DateText)} — expected a date like "Jul 29, 2026"`
+        `Invalid DateText: ${JSON.stringify(raw.DateText)} — expected a date like `
+        + '"Jul 29, 2026" or "Jul 29, 2026 at 8:51 PM ET"'
       );
     }
-    out.date = iso;
+    out.date = parts.date;
+    // The alert's date row carries the clock time too. Take it when the sender did not supply one
+    // separately, so a Shortcut gets `time` populated without any extra actions.
+    if (out.time === undefined && parts.time) out.time = parts.time;
   }
 
   return out;
@@ -275,8 +334,15 @@ function buildManualTransaction(input, options = {}) {
   // date, so everything below sees exactly one shape regardless of which spelling arrived.
   const raw = normalizeIngestInput(input);
 
-  const description = typeof raw.description === 'string' ? raw.description.trim() : '';
-  if (!description) throw new Error('A description is required');
+  const description = cleanDescription(raw.description);
+  if (!description) {
+    // Say which of the two it was. "A description is required" is baffling when you can see one in
+    // the payload you just sent.
+    const sent = typeof raw.description === 'string' ? raw.description.trim() : '';
+    throw new Error(sent
+      ? `A description is required — ${JSON.stringify(sent)} is only a field label, not a merchant`
+      : 'A description is required');
+  }
 
   const dateMs = parseIsoDate(raw.date);
   if (dateMs === null) {
@@ -382,6 +448,8 @@ module.exports = {
   MAX_TIME_LENGTH,
   INPUT_ALIASES,
   parseAlertDate,
+  splitAlertDateText,
+  cleanDescription,
   normalizeIngestInput,
   resolveDescriptionRule,
   parseCardLast4Map,
