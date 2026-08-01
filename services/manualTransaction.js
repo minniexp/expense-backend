@@ -48,6 +48,154 @@ function resolveDescriptionRule(description) {
 }
 
 /**
+ * Card last-four → canonical payment method, parsed from CARD_LAST4_MAP:
+ *
+ *   CARD_LAST4_MAP="8923:Freedom Unlimited,1234:Freedom Flex"
+ *
+ * A bank alert email names the card by its last four digits and nothing else, so something has to
+ * turn "8923" into an account this ledger recognises. Doing it here rather than in the sender keeps
+ * one copy of the mapping: a phone does not have to be re-edited when a card is replaced.
+ *
+ * Environment rather than a constant in this file for two reasons — the digits stay out of a
+ * repository that lives on GitHub, and adding a card becomes a config change rather than a deploy.
+ *
+ * The resolved name must be one of the names the rest of the app already uses (PAYMENT_METHODS in
+ * the frontend's utils/constants.js). That string equality is load-bearing three times over:
+ *
+ *   - normalizeAmountSign() reads it to decide the row's sign. 'Chase College' and 'Cash' treat a
+ *     positive figure as money arriving; every credit card treats it as a charge. A name it does
+ *     not recognise is filed with the credit-card convention by default.
+ *   - calculatePoints() rewards by card, so a misspelling silently earns zero.
+ *   - the /my dropdowns list those exact strings, so anything else is uneditable in the UI.
+ *
+ * Alerts are now the only source of transactions — the Teller bank feed is retired — so nothing
+ * downstream will notice and correct a wrong card name later.
+ */
+function parseCardLast4Map(raw) {
+  const map = {};
+  if (typeof raw !== 'string') return map;
+  for (const entry of raw.split(',')) {
+    // indexOf rather than split(':') so a card name containing a colon survives intact.
+    const separator = entry.indexOf(':');
+    if (separator === -1) continue;
+    const last4 = entry.slice(0, separator).trim();
+    const cardName = entry.slice(separator + 1).trim();
+    if (/^\d{4}$/.test(last4) && cardName) map[last4] = cardName;
+  }
+  return map;
+}
+
+/** The card those four digits belong to, or null. Never guesses. */
+function resolveCardFromLast4(last4, map) {
+  const digits = String(last4 === undefined || last4 === null ? '' : last4).trim();
+  if (!/^\d{4}$/.test(digits)) return null;
+  return (map && map[digits]) || null;
+}
+
+/**
+ * Month names as the alert email writes them. A lookup rather than `new Date("Jul 29, 2026")`,
+ * which resolves against the server's timezone and would shift the day across a UTC boundary — the
+ * one thing this file is careful never to do. It also keeps the module honest about having no clock.
+ */
+const MONTH_ABBREVIATIONS = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/**
+ * "Jul 29, 2026" -> "2026-07-29", or null if it is not that shape.
+ *
+ * Chase writes the date in prose, so something has to convert it. Doing it here rather than in the
+ * Shortcut removes two actions from the phone and puts the conversion somewhere it can be tested.
+ *
+ * Tolerates the full month name, a trailing dot, and a missing comma ("September 3 2026",
+ * "Sept. 3, 2026"). Deliberately does NOT validate the calendar — it composes the string and lets
+ * the existing parseIsoDate check reject 30 February, so there is one date validator, not two.
+ */
+function parseAlertDate(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^\s*([A-Za-z]{3,9})\.?\s+(\d{1,2})\s*,?\s+(\d{4})\s*$/.exec(value);
+  if (!match) return null;
+
+  const month = MONTH_ABBREVIATIONS[match[1].slice(0, 3).toLowerCase()];
+  if (!month) return null;
+
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${match[3]}-${pad(month)}-${pad(Number(match[2]))}`;
+}
+
+/**
+ * The names an iOS Shortcut naturally has for these values, mapped onto the ledger's own.
+ *
+ * A Shortcut holds its parsed values in variables called `Amount`, `Merchant`, `Last4` and so on,
+ * and building the request body is far less fiddly on a phone if those can be sent as-is. Accepting
+ * both spellings costs one lookup and means the Shortcut needs no renaming step.
+ *
+ * `DateText` is absent here on purpose — it needs converting, not renaming, and is handled below.
+ */
+const INPUT_ALIASES = {
+  Amount: 'amount',
+  Merchant: 'description',
+  Last4: 'cardLast4',
+  Time: 'time',
+  Notes: 'notes',
+  Category: 'category',
+  PurchaseCats: 'purchaseCategory',
+  PurchaseCategory: 'purchaseCategory',
+  PaymentMethod: 'paymentMethod',
+  TransactionType: 'transactionType',
+};
+
+/**
+ * Accept the Shortcut's spelling as well as the ledger's.
+ *
+ * An explicit lowercase key always wins, so nothing that already posts to this endpoint changes
+ * behaviour — the aliases only fill gaps.
+ *
+ * @throws {Error} if `DateText` was sent but is not a date, rather than letting it fall through as a
+ *   missing date and reporting `undefined` back to the sender.
+ */
+function normalizeIngestInput(input) {
+  const raw = input && typeof input === 'object' ? input : {};
+  const out = { ...raw };
+
+  for (const [alias, canonical] of Object.entries(INPUT_ALIASES)) {
+    if (raw[alias] !== undefined && out[canonical] === undefined) out[canonical] = raw[alias];
+  }
+
+  if (raw.DateText !== undefined && raw.date === undefined) {
+    const iso = parseAlertDate(raw.DateText);
+    if (iso === null) {
+      throw new Error(
+        `Invalid DateText: ${JSON.stringify(raw.DateText)} — expected a date like "Jul 29, 2026"`
+      );
+    }
+    out.date = iso;
+  }
+
+  return out;
+}
+
+/** Longest time string worth storing — "12:34 PM ET" and friends, with room to spare. */
+const MAX_TIME_LENGTH = 20;
+
+/**
+ * The clock time the alert printed, kept verbatim.
+ *
+ * Deliberately not parsed into a Date. The alert states its own zone ("8:51 PM ET"), which is not
+ * necessarily the phone's or the server's, and resolving one against the other to store an instant
+ * would move a late-evening purchase onto the neighbouring day every time the guess was wrong.
+ * `date` already carries the day authoritatively, so the time only has to be readable.
+ */
+function parseTime(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid time: ${JSON.stringify(value)} — expected a string`);
+  }
+  return value.trim().slice(0, MAX_TIME_LENGTH);
+}
+
+/**
  * Parse an amount, rejecting anything that is not actually a number.
  *
  * `Number(null)`, `Number('')` and `Number([])` are all 0, so a missing amount would otherwise
@@ -113,12 +261,19 @@ function deriveTransactionId({ date, amount, description, paymentMethod }, ordin
  * @param {function} options.returnIdForMonth  (year, month) => returnId | null
  * @param {number} [options.ordinal]           distinguishes a genuine repeat
  * @param {string} [options.source]            provenance, default 'phone'
+ * @param {object} [options.cardLast4Map]      last-four → card name; injected by tests, otherwise
+ *                                             read once from CARD_LAST4_MAP
  * @returns {object} ready to persist
  * @throws {Error} on any invalid input — never silently coerces
  */
 function buildManualTransaction(input, options = {}) {
-  const { userId, returnIdForMonth = () => null, ordinal = 0, source = 'phone' } = options;
-  const raw = input || {};
+  const {
+    userId, returnIdForMonth = () => null, ordinal = 0, source = 'phone',
+    cardLast4Map = parseCardLast4Map(process.env.CARD_LAST4_MAP),
+  } = options;
+  // Resolves the Shortcut's field names onto the ledger's, and turns "Jul 29, 2026" into an ISO
+  // date, so everything below sees exactly one shape regardless of which spelling arrived.
+  const raw = normalizeIngestInput(input);
 
   const description = typeof raw.description === 'string' ? raw.description.trim() : '';
   if (!description) throw new Error('A description is required');
@@ -137,9 +292,27 @@ function buildManualTransaction(input, options = {}) {
     );
   }
 
-  // Precedence: explicit > description rule > fallback.
+  // Precedence: explicit > card last-four > description rule > fallback.
   const rule = resolveDescriptionRule(description);
-  const paymentMethod = raw.paymentMethod || (rule && rule.paymentMethod) || DEFAULT_PAYMENT_METHOD;
+  const sentLast4 = raw.cardLast4 !== undefined && raw.cardLast4 !== null && raw.cardLast4 !== '';
+  const fromLast4 = sentLast4 ? resolveCardFromLast4(raw.cardLast4, cardLast4Map) : null;
+
+  // Reject an unrecognised card rather than quietly falling through to Cash. Falling through would
+  // store the amount with the wrong sign — Cash treats a positive figure as money arriving, a credit
+  // card as a charge — and compute points against the wrong card. Neither is visible in the row
+  // itself; both corrupt every total that includes it.
+  //
+  // Failing is the recoverable option: the alert email is still in the inbox and can be resent once
+  // the map is updated. But the sender MUST surface this error, because with the bank feed retired
+  // there is no second source that would reveal the missing row later.
+  if (sentLast4 && !fromLast4 && !raw.paymentMethod) {
+    throw new Error(`Unknown card ...${raw.cardLast4} — add it to CARD_LAST4_MAP`);
+  }
+
+  const paymentMethod = raw.paymentMethod
+    || fromLast4
+    || (rule && rule.paymentMethod)
+    || DEFAULT_PAYMENT_METHOD;
   // Last-resort fallback, and it deliberately does NOT reuse determineTransactionType().
   //
   // That function encodes how the BANK reports: on a checking account a positive figure is
@@ -168,11 +341,19 @@ function buildManualTransaction(input, options = {}) {
 
   const isParentsMonthly = category === 'parents-monthly';
 
+  // An explicit flag wins, so a sender that knows better can say so. `returnId` below stays tied to
+  // the category regardless: a 'parents-monthly' row belongs to that month's return whether or not
+  // this particular one is being claimed back, and severing the link would orphan it in the UI.
+  const needToBePaidback = typeof raw.needToBePaidback === 'boolean'
+    ? raw.needToBePaidback
+    : isParentsMonthly;
+
   return {
     userId,
     tellerTransactionId: deriveTransactionId({ date: raw.date, amount, description, paymentMethod }, ordinal),
     source,
     date: raw.date,
+    time: parseTime(raw.time),
     year,
     month,
     day,
@@ -182,10 +363,15 @@ function buildManualTransaction(input, options = {}) {
     category,
     purchaseCategory,
     paymentMethod,
+    // What the alert actually said, kept beside the resolved name so a mis-mapped card is
+    // diagnosable after the fact rather than only visible as a wrong total. Four digits or nothing.
+    cardLast4: /^\d{4}$/.test(String(raw.cardLast4 || '').trim())
+      ? String(raw.cardLast4).trim()
+      : '',
     points,
     returnId: isParentsMonthly ? returnIdForMonth(year, month) : null,
     returned: false,
-    needToBePaidback: isParentsMonthly,
+    needToBePaidback,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
   };
 }
@@ -193,7 +379,14 @@ function buildManualTransaction(input, options = {}) {
 module.exports = {
   DESCRIPTION_RULES,
   DEFAULT_PAYMENT_METHOD,
+  MAX_TIME_LENGTH,
+  INPUT_ALIASES,
+  parseAlertDate,
+  normalizeIngestInput,
   resolveDescriptionRule,
+  parseCardLast4Map,
+  resolveCardFromLast4,
+  parseTime,
   parseAmount,
   normalizeAmountSign,
   deriveTransactionId,

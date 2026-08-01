@@ -1,6 +1,6 @@
 const Transaction = require('../models/Transaction');
 const {
-  buildManualTransaction, deriveTransactionId,
+  buildManualTransaction, deriveTransactionId, parseCardLast4Map,
 } = require('../services/manualTransaction');
 
 /**
@@ -45,14 +45,27 @@ async function resolveOrdinal(candidate, allowDuplicate) {
 /**
  * POST /api/ingest/transaction
  *
- * Body: a single transaction object, or an array of them.
- *   { amount, date, description, notes?, transactionType?, paymentMethod?,
- *     category?, purchaseCategory?, points?, allowDuplicate? }
+ * Body: a single transaction object, or an array of them, in either of two spellings.
+ *
+ * The ledger's own:
+ *   { amount, date, description, notes?, time?, cardLast4?, transactionType?, paymentMethod?,
+ *     category?, purchaseCategory?, points?, needToBePaidback?, allowDuplicate? }
+ *
+ * Or the names an iOS Shortcut already has for the values it parsed out of a bank alert, which it
+ * can then send without a renaming step:
+ *   { "DateText": "Jul 29, 2026", "Amount": 168.00,
+ *     "Merchant": "WWW.SWAN-DIVEPILATES", "Last4": "8923" }
+ *
+ * Both are normalised to one shape by normalizeIngestInput() in services/manualTransaction.js; a
+ * lowercase key always wins if both are present. Everything absent is derived: `Last4` becomes the
+ * payment method, which fixes the amount's sign and its points; the description picks the category.
  */
 exports.ingestTransactions = async (req, res) => {
   try {
     const body = req.body;
     const items = Array.isArray(body) ? body : [body];
+
+    console.log('items', JSON.stringify(items, null, 2));
 
     if (items.length === 0 || (items.length === 1 && (!items[0] || typeof items[0] !== 'object'))) {
       return res.status(400).json({
@@ -70,14 +83,21 @@ exports.ingestTransactions = async (req, res) => {
     const saved = [];
     const errors = [];
 
+    // Parsed once per request, and passed to BOTH buildManualTransaction calls below. The second
+    // one re-derives the whole record for the duplicate path, so options that differ between the two
+    // would resolve a retried duplicate onto a different card than the original.
+    const cardLast4Map = parseCardLast4Map(process.env.CARD_LAST4_MAP);
+
     for (const [index, item] of items.entries()) {
       let record;
       try {
-        const base = buildManualTransaction(item, {
+        const buildOptions = {
           userId: (item && item.userId) || process.env.MONGODB_USERID,
           returnIdForMonth,
           source: 'phone',
-        });
+          cardLast4Map,
+        };
+        const base = buildManualTransaction(item, buildOptions);
         const ordinal = await resolveOrdinal(
           { date: base.date, amount: base.amount, description: base.description,
             paymentMethod: base.paymentMethod },
@@ -85,10 +105,7 @@ exports.ingestTransactions = async (req, res) => {
         );
         record = ordinal === 0
           ? base
-          : buildManualTransaction(item, {
-            userId: (item && item.userId) || process.env.MONGODB_USERID,
-            returnIdForMonth, source: 'phone', ordinal,
-          });
+          : buildManualTransaction(item, { ...buildOptions, ordinal });
       } catch (e) {
         // Validation failures are the sender's to fix, not a 500.
         errors.push({ index, message: e.message });

@@ -153,7 +153,11 @@ function determineCategory(transaction) {
   const description = String(transaction.description || '').toUpperCase();
 
   if (GROCERY_STORES.some((store) => description.includes(store))) return 'parents-monthly';
-  if (description.includes('WWW.SWAN-DIVEPILATES.C WWW.SWAN-DIVE')) return 'bill';
+  // Matched on the shortest form the merchant appears in. Rows already in the ledger came from the
+  // retired bank feed as "WWW.SWAN-DIVEPILATES.C WWW.SWAN-DIVE"; new ones arrive from Chase's alert
+  // email as plain "WWW.SWAN-DIVEPILATES". The short substring covers both, so the same purchase
+  // classifies the same way regardless of which era it came from.
+  if (description.includes('WWW.SWAN-DIVEPILATES')) return 'bill';
   if (description.includes('CAREONE DENTAL ASSOCIATES GLENVIEW')) return 'doctors';
 
   return '';

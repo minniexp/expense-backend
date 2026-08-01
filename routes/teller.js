@@ -7,6 +7,9 @@ router.get('/enrollment-config', tellerController.getEnrollmentToken);
 router.post('/enrollment', tellerController.handleAccessToken);
 router.get('/transactions', tellerController.getTellerTransactions);
 
+// LOCAL DIAGNOSTIC — not for commit. Lists the enrollment behind the current access token.
+router.get('/live-enrollments', tellerController.getLiveEnrollments);
+
 // Dismissed transactions — reviewed, deliberately not logged, filtered out of future fetches.
 // Reversible: DELETE puts them straight back in the review queue.
 router.get('/ignored', ignoredTransactionsController.listIgnoredTransactions);

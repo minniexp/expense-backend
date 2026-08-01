@@ -40,6 +40,14 @@ const transactionSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  // Clock time as a bank alert email printed it, verbatim (e.g. "8:51 PM ET"). Kept as a string
+  // rather than folded into a Date: converting needs both the alert's zone and the reader's, and a
+  // wrong guess silently moves a late-evening purchase onto the neighbouring day. Empty for every
+  // row that did not come from an alert — the bank feed reports a date only.
+  time: {
+    type: String,
+    default: ''
+  },
 
   // Transaction Details
   description: {
@@ -97,6 +105,13 @@ const transactionSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     required: false
+  },
+  // Last four of the card as printed in the alert that produced this row. Resolving it to a
+  // canonical paymentMethod is services/manualTransaction.js's job; this only records what the bank
+  // said, so a mis-mapped card can be found later instead of surfacing as an unexplained total.
+  cardLast4: {
+    type: String,
+    default: ''
   },
   points: {
     type: Number,

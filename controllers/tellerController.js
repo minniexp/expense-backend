@@ -341,3 +341,51 @@ exports.getTellerTransactions = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+/**
+ * GET /api/teller/live-enrollments   — LOCAL DIAGNOSTIC, NOT COMMITTED.
+ *
+ * Reports the enrollment(s) reachable with the CURRENT access token, derived from the accounts
+ * API, which returns `enrollment_id` on every account.
+ *
+ * This is the only way to see an enrollment id without going through Teller Connect: Connect
+ * creates and updates enrollments, it never lists them. Note this shows only the enrollment
+ * belonging to the token we hold — to see every enrollment an application has, use the Teller
+ * dashboard.
+ */
+exports.getLiveEnrollments = async (req, res) => {
+  try {
+    const token = process.env.TELLER_ACCESS_TOKEN;
+    if (!token) return res.status(400).json({ error: 'TELLER_ACCESS_TOKEN is not set' });
+
+    const r = await tellerGet('/accounts', token);
+    if (!r.ok) {
+      return res.status(502).json({
+        error: `Teller returned HTTP ${r.status}`,
+        detail: (await r.text().catch(() => '')).slice(0, 300),
+      });
+    }
+    const accounts = await r.json();
+    const byEnrollment = {};
+    for (const a of accounts) {
+      const key = a.enrollment_id || '(none)';
+      (byEnrollment[key] = byEnrollment[key] || []).push({
+        name: a.name, lastFour: a.last_four, status: a.status,
+        institution: a.institution && a.institution.name,
+      });
+    }
+    res.json({
+      configuredEnrollmentId: process.env.TELLER_ENROLLMENT_ID || null,
+      environment: process.env.TELLER_ENV || null,
+      enrollments: Object.entries(byEnrollment).map(([enrollmentId, accts]) => ({
+        enrollmentId,
+        institution: accts[0] && accts[0].institution,
+        accountCount: accts.length,
+        accounts: accts,
+        matchesConfigured: enrollmentId === process.env.TELLER_ENROLLMENT_ID,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
