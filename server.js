@@ -152,6 +152,10 @@ app.use(
 
 app.use('/api/returns', requireInternalSecret, validateToken, require('./routes/returns'));
 
+// Monthly allowances and the spending summary built from them. Same two controls as the rest of
+// the data surface: only our own Next.js server can reach it, and it must present a valid session.
+app.use('/api/budgets', requireInternalSecret, validateToken, require('./routes/budgets'));
+
 // Trip expense splitter. Same two controls as the rest of the data surface: only our own
 // Next.js server can reach it, and it must still present a valid session.
 app.use('/api/trips', requireInternalSecret, validateToken, require('./routes/trips'));
