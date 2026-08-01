@@ -80,6 +80,18 @@ exports.ingestTransactions = async (req, res) => {
       return res.status(400).json({ message: `Too many transactions (${items.length}; max ${MAX_BATCH}).` });
     }
 
+    // Whose ledger these rows belong to. Fixed to MINID rather than read from the payload: the
+    // ingest credential is create-only and lives on a phone, so letting a request name its own
+    // userId would let whoever holds that token write into anybody's ledger. One person posts here.
+    //
+    // Fails closed for the same reason the token checks do — a row with no owner is invisible in
+    // every view that filters by user, so it would look like the transaction was simply lost.
+    const userId = process.env.MINID;
+    if (!userId) {
+      console.error('MINID is not set — refusing to write rows with no owner');
+      return res.status(503).json({ error: 'Server is not configured for this request' });
+    }
+
     const saved = [];
     const errors = [];
 
@@ -92,7 +104,7 @@ exports.ingestTransactions = async (req, res) => {
       let record;
       try {
         const buildOptions = {
-          userId: (item && item.userId) || process.env.MONGODB_USERID,
+          userId,
           returnIdForMonth,
           source: 'phone',
           cardLast4Map,
@@ -115,9 +127,15 @@ exports.ingestTransactions = async (req, res) => {
       // Upsert on the derived id, so a retried request updates the same row rather than
       // creating a second one. This is what makes the endpoint safe to call from a phone on a
       // flaky connection.
+      //
+      // `reviewed` is the one field that must NOT be re-set on update. Two ordinary things send the
+      // same transaction twice — a retry over a bad connection, and the second post carrying the
+      // category you picked — and either would silently mark an already-reviewed row unreviewed
+      // again. $setOnInsert writes it once, when the row is created, and never touches it after.
+      const { reviewed, ...mutable } = record;
       const result = await Transaction.findOneAndUpdate(
         { tellerTransactionId: record.tellerTransactionId },
-        { $set: record },
+        { $set: mutable, $setOnInsert: { reviewed } },
         { upsert: true, new: true, setDefaultsOnInsert: true, rawResult: true }
       );
       const doc = result.value || result;

@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Transaction = require('../models/Transaction');
 const Return = require('../models/Return');
 const PendingTransactions = require('../models/PendingTransactions');
+const { planReturnUnlink } = require('../services/returnUnlink');
 
 const getReturnIdForMonth = (year, month) => {
   const monthMap = {
@@ -268,6 +269,87 @@ exports.deleteAllTransactions = async (req, res) => {
   }
 };
 
+/** A selection made by hand in a grid. Far above any real one, low enough to bound a mistake. */
+const MAX_DELETE_BATCH = 200;
+
+/**
+ * POST /api/transactions/delete   Body: { ids: [mongoId, ...] }
+ *
+ * Delete chosen rows. POST rather than DELETE because the ids travel in a body, which DELETE does
+ * not carry reliably — the same reason /api/teller/ignored is a POST.
+ *
+ * The work that is easy to miss is the un-linking. A Return keeps its own copy of the transaction
+ * ids it covers and a running `total` that was incremented when each row was added. Deleting a row
+ * without reversing that leaves a dangling reference and a total that overstates what is owed, and
+ * nothing anywhere recomputes it — the number would simply be wrong from then on.
+ */
+exports.deleteTransactions = async (req, res) => {
+  try {
+    const ids = req.body && req.body.ids;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'Send { ids: [...] } with at least one transaction id.' });
+    }
+    if (ids.length > MAX_DELETE_BATCH) {
+      return res.status(400).json({
+        message: `Too many transactions (${ids.length}; max ${MAX_DELETE_BATCH}).`,
+      });
+    }
+
+    const valid = [...new Set(ids.filter((id) => mongoose.Types.ObjectId.isValid(id)).map(String))];
+    const invalid = ids.length - valid.length;
+    if (valid.length === 0) {
+      return res.status(400).json({ message: 'No valid transaction ids were supplied.' });
+    }
+
+    // Read them before deleting: once the rows are gone there is no way to know which Returns
+    // referenced them or how much to take off each total.
+    const docs = await Transaction.find({ _id: { $in: valid } });
+    if (docs.length === 0) {
+      return res.status(404).json({ message: 'None of those transactions exist.' });
+    }
+
+    const byReturn = new Map();
+    for (const doc of docs) {
+      if (!doc.returnId) continue;
+      const key = String(doc.returnId);
+      if (!byReturn.has(key)) byReturn.set(key, []);
+      byReturn.get(key).push(doc);
+    }
+
+    const unlinked = [];
+    for (const [returnId, group] of byReturn) {
+      const returnDoc = await Return.findById(returnId);
+      if (!returnDoc) continue;
+
+      const plan = planReturnUnlink(returnDoc, group);
+      returnDoc.returnedTransactionIds = plan.returnedTransactionIds;
+      returnDoc.returnedTellerTransactionIds = plan.returnedTellerTransactionIds;
+      returnDoc.total = plan.total;
+
+      await returnDoc.save();
+      unlinked.push({ returnId, removedFromTotal: plan.removedFromTotal, count: group.length });
+    }
+
+    const result = await Transaction.deleteMany({ _id: { $in: docs.map((d) => d._id) } });
+
+    // Deliberately no amounts or descriptions — this runs on a hosted log stream.
+    console.log(`[POST /transactions/delete] requested=${ids.length} deleted=${result.deletedCount} `
+      + `returnsTouched=${unlinked.length} invalidIds=${invalid}`);
+
+    res.json({
+      message: `Deleted ${result.deletedCount} transaction(s).`,
+      deleted: result.deletedCount,
+      requested: ids.length,
+      ...(invalid ? { invalidIds: invalid } : {}),
+      ...(unlinked.length ? { unlinkedFromReturns: unlinked } : {}),
+    });
+  } catch (err) {
+    console.error('Error deleting transactions:', err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
 exports.updateTransactionsMany = async (req, res) => {
   try {
     const transactions = req.body;
@@ -325,6 +407,7 @@ exports.updateTransactionsMany = async (req, res) => {
             transactionType: transaction.transactionType,
             returnId: transaction.returnId,
             returned: transaction.returned,
+            reviewed: transaction.reviewed,
             needToBePaidback: transaction.needToBePaidback,
             notes: transaction.notes
           },

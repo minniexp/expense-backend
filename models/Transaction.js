@@ -135,6 +135,15 @@ const transactionSchema = new mongoose.Schema({
   },
 
   // Additional Information
+  //
+  // Whether a person has actually looked at this row. Alert-sourced rows arrive with a category
+  // guessed from the merchant and no human involved, so this marks the queue of what still needs
+  // checking. Written once when the row is created and never overwritten by a re-post — see the
+  // $setOnInsert in ingestController.
+  reviewed: {
+    type: Boolean,
+    default: false
+  },
   needToBePaidback: {
     type: Boolean,
     default: false

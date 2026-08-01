@@ -34,12 +34,49 @@ const {
  * Ordered: the first match wins. Extend as new recurring descriptions appear.
  */
 const DESCRIPTION_RULES = [
-  { match: /zelle\s+payment\s+from/i, transactionType: 'income', paymentMethod: 'Chase College' },
-  { match: /zelle\s+payment\s+to/i, transactionType: 'expense', paymentMethod: 'Chase College' },
+  // "payment" is optional so one rule covers both wordings this ledger sees: the bank feed's
+  // "Zelle payment from HYEON M YANG", and the shorter "Zelle from SHARON LEE / Mr. Kimchi" that an
+  // alert-driven Shortcut composes from the sender's name and the memo.
+  { match: /zelle\s+(?:payment\s+)?from/i, transactionType: 'income', paymentMethod: 'Chase College' },
+  { match: /zelle\s+(?:payment\s+)?to/i, transactionType: 'expense', paymentMethod: 'Chase College' },
+
+  // Payroll, filed against the checking account the deposit actually lands in.
+  //
+  // A rule can pin `category` and `points` as well as the two fields above, which is what lets one
+  // entry express everything that is always true of a payroll deposit. `points: 0` is deliberately
+  // stated rather than left to calculatePoints() — that function already returns 0 for Chase
+  // College, but the rule should not quietly depend on a rewards table it has no stake in.
+  {
+    match: /direct\s+deposit\s*[-–—]?\s*payroll/i,
+    transactionType: 'income',
+    paymentMethod: 'Chase College',
+    category: 'payroll',
+    points: 0,
+  },
 ];
+
+/**
+ * A Zelle transfer whose description does not say which way the money went.
+ *
+ * "Zelle - SHARON LEE" reads fine to a person and tells this code nothing: the amount arrives
+ * positive either way, so the fallback would file received money as money spent, and the checking
+ * account's sign convention would then store it negative. A $60 credit becomes a $60 debit, and
+ * nothing downstream would ever contradict it.
+ */
+const ZELLE = /\bzelle\b/i;
 
 const VALID_TYPES = ['income', 'expense'];
 const DEFAULT_PAYMENT_METHOD = 'Cash';
+
+/**
+ * Where a transaction lands when nothing else has an opinion.
+ *
+ * The classifiers return an empty string when no rule matches, which is a legal category but an
+ * unhelpful one — it reads as "not yet decided" in the UI and sorts into no bucket in any summary.
+ * Most spending is personal, so that is the honest default, and the `reviewed` flag is what marks
+ * it as still needing a human rather than an empty field standing in for the same thing.
+ */
+const DEFAULT_CATEGORY = 'personal';
 
 /** First matching rule, or null. Never guesses. */
 function resolveDescriptionRule(description) {
@@ -358,7 +395,15 @@ function buildManualTransaction(input, options = {}) {
     );
   }
 
-  // Precedence: explicit > card last-four > description rule > fallback.
+  // Precedence: explicit > description rule > card last-four > fallback.
+  //
+  // The rule beats the card, which is the reverse of what it was, because a rule is a deliberate
+  // statement about one known description while a last-four map is a blanket mapping — the more
+  // specific fact should win. Payroll is the case that forced it: the money lands in the checking
+  // account, so the alert names that card, but the ledger files payroll against Cash.
+  //
+  // Nothing that worked before changes. Card purchases match no rule, so the last-four still
+  // decides; both Zelle rules already resolved to the same account the last-four would have.
   const rule = resolveDescriptionRule(description);
   const sentLast4 = raw.cardLast4 !== undefined && raw.cardLast4 !== null && raw.cardLast4 !== '';
   const fromLast4 = sentLast4 ? resolveCardFromLast4(raw.cardLast4, cardLast4Map) : null;
@@ -371,13 +416,15 @@ function buildManualTransaction(input, options = {}) {
   // Failing is the recoverable option: the alert email is still in the inbox and can be resent once
   // the map is updated. But the sender MUST surface this error, because with the bank feed retired
   // there is no second source that would reveal the missing row later.
-  if (sentLast4 && !fromLast4 && !raw.paymentMethod) {
+  // A rule that names the account answers the question the card would have, so an unmapped card is
+  // only a problem when nothing else can supply one.
+  if (sentLast4 && !fromLast4 && !raw.paymentMethod && !(rule && rule.paymentMethod)) {
     throw new Error(`Unknown card ...${raw.cardLast4} — add it to CARD_LAST4_MAP`);
   }
 
   const paymentMethod = raw.paymentMethod
-    || fromLast4
     || (rule && rule.paymentMethod)
+    || fromLast4
     || DEFAULT_PAYMENT_METHOD;
   // Last-resort fallback, and it deliberately does NOT reuse determineTransactionType().
   //
@@ -389,6 +436,17 @@ function buildManualTransaction(input, options = {}) {
   // So: a bare positive amount is an expense, a negative one is a refund or income. The sign
   // convention for STORAGE is still the account's — normalizeAmountSign() applies it below —
   // so the stored row remains indistinguishable from a bank-sourced one.
+  // Refuse to guess the direction of a transfer. Everywhere else the fallback below is a fair
+  // reading — someone typing "12.50, ARMO GRILL" into their phone means they spent it. A Zelle
+  // transfer is the one case where the same positive number means the opposite thing half the time,
+  // and the description is the only place that distinction can live.
+  if (!raw.transactionType && !rule && ZELLE.test(description)) {
+    throw new Error(
+      `Ambiguous Zelle description: ${JSON.stringify(description)} — write it as `
+      + '"Zelle from <name>" or "Zelle to <name>", or send transactionType'
+    );
+  }
+
   const transactionType = raw.transactionType
     || (rule && rule.transactionType)
     || (submitted > 0 ? 'expense' : 'income');
@@ -400,10 +458,20 @@ function buildManualTransaction(input, options = {}) {
   const purchaseCategory = raw.purchaseCategory !== undefined
     ? raw.purchaseCategory
     : determinePurchaseCategory(forClassifier);
-  const category = raw.category !== undefined ? raw.category : determineCategory(forClassifier);
+  // An empty string counts as "not supplied", not as a deliberate blank: a Shortcut whose category
+  // picker was dismissed sends "" rather than omitting the field, and both mean the same thing.
+  const supplied = typeof raw.category === 'string' ? raw.category.trim() : raw.category;
+  const category = (supplied === undefined || supplied === null || supplied === '')
+    ? ((rule && rule.category) || determineCategory(forClassifier) || DEFAULT_CATEGORY)
+    : supplied;
+
+  // A rule may pin points to zero, which the fallback below cannot express — `|| calculatePoints()`
+  // would read 0 as "unset" and recompute it.
   const points = raw.points !== undefined
     ? Number(raw.points)
-    : calculatePoints(paymentMethod, purchaseCategory, month);
+    : (rule && rule.points !== undefined
+      ? rule.points
+      : calculatePoints(paymentMethod, purchaseCategory, month));
 
   const isParentsMonthly = category === 'parents-monthly';
 
@@ -437,6 +505,9 @@ function buildManualTransaction(input, options = {}) {
     points,
     returnId: isParentsMonthly ? returnIdForMonth(year, month) : null,
     returned: false,
+    // Nobody has looked at this yet by definition — it was built from an email, not typed by a
+    // person. The caller decides how to persist it; ingestController writes it on insert only.
+    reviewed: false,
     needToBePaidback,
     notes: typeof raw.notes === 'string' ? raw.notes : '',
   };
@@ -445,6 +516,7 @@ function buildManualTransaction(input, options = {}) {
 module.exports = {
   DESCRIPTION_RULES,
   DEFAULT_PAYMENT_METHOD,
+  DEFAULT_CATEGORY,
   MAX_TIME_LENGTH,
   INPUT_ALIASES,
   parseAlertDate,
