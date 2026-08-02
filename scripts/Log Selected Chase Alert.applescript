@@ -233,7 +233,17 @@ on routeFor(theSubject)
 		return "card purchase"
 	end if
 	if theSubject contains "received money with Zelle" then return "Zelle received"
+	-- Chase sends two subjects for one deposit, and payroll produces both every time:
+	--     You have a direct deposit of $2,853.37
+	--     Your $2,853.37 direct deposit posted to account ending in (...8837)
+	-- Their bodies are identical in structure, so either can be parsed. Both are matched because
+	-- which one arrives first is not predictable, and the duplicate check on the server means the
+	-- second is recognised as already logged rather than saved twice.
+	--
+	-- Matched on these exact phrasings rather than a bare "direct deposit", which would also catch
+	-- "Direct deposit is now easier than ever" and the university mailshots already in this inbox.
 	if theSubject contains "You have a direct deposit" then return "payroll deposit"
+	if theSubject contains "direct deposit posted to account" then return "payroll deposit"
 	return ""
 end routeFor
 
