@@ -51,11 +51,33 @@ property P_LAST4 : "\\(\\.\\.\\.\\s?(\\d{4})\\)"
 property P_ZELLE_SENDER : "(?:\\n|^)[ \\t]*([A-Za-z][A-Za-z .'\\-]{1,60}?)[ \\t]+sent you money"
 property P_MEMO : "Memo(?:[ \\t]|<[^>]*>)*\\r?\\n?(?:[ \\t]|<[^>]*>)*([^\\r\\n<]+)"
 
--- The date a Zelle transfer actually happened, which is not always the day the mail arrived.
+-- The date the transaction actually happened, which is not always the day the mail arrived.
+--
 -- Forwarding an alert gives the forward a fresh `date received`, so a July payment forwarded in
 -- August would be dated August — and the date is part of the row's identity, so it would save as a
--- second transaction rather than matching the first. The body knows better than the envelope.
-property P_ZELLE_SENT_ON : "Sent on(?:[ \\t]|<[^>]*>)*\\r?\\n?(?:[ \\t]|<[^>]*>)*([A-Z][a-z]{2} \\d{1,2}, \\d{4})"
+-- second transaction rather than matching the first. When the message states its own date, the body
+-- knows better than the envelope.
+--
+-- Each alert type prints that date under its own label, so the label is what varies, not the shape:
+--
+--     Zelle          Sent on    Jul 11, 2026
+--     direct deposit Posted     Jul 31, 2026 at 3:47 AM ET
+--
+-- The time and zone are optional in the capture because only some of them carry one, and the server
+-- parses either form.
+on datePatternFor(theLabel)
+	return theLabel & "(?:[ \\t]|<[^>]*>)*\\r?\\n?(?:[ \\t]|<[^>]*>)*" & ¬
+		"([A-Z][a-z]{2} \\d{1,2}, \\d{4}(?: at \\d{1,2}:\\d{2} ?[AP]M(?: [A-Z]{2,4})?)?)"
+end datePatternFor
+
+-- Empty means the message does not state a date of its own and the envelope is the best available.
+-- Card alerts print one under "Date", but they arrive within seconds of the purchase, so the
+-- received date is already right and reading the body would only add a way to be wrong.
+on dateLabelFor(theRoute)
+	if theRoute is "Zelle received" then return "Sent on"
+	if theRoute is "payroll deposit" then return "Posted"
+	return ""
+end dateLabelFor
 
 property MONTH_ABBR : {"Jan", "Feb", "Mar", "Apr", "May", "Jun", ¬
 	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -470,11 +492,12 @@ on processMessages(collected, interactive)
 				-- The envelope's date, unless the message states its own.
 				set theDateText to my chaseStyleDate(mReceived of entry)
 				set dateSource to "date received"
-				if theRoute is "Zelle received" then
-					set sentOn to my regexCapture(mBody of entry, P_ZELLE_SENT_ON)
-					if sentOn is not missing value and sentOn is not "" then
-						set theDateText to sentOn
-						set dateSource to "\"Sent on\" in the body"
+				set theDateLabel to my dateLabelFor(theRoute)
+				if theDateLabel is not "" then
+					set stated to my regexCapture(mBody of entry, my datePatternFor(theDateLabel))
+					if stated is not missing value and stated is not "" then
+						set theDateText to stated
+						set dateSource to "\"" & theDateLabel & "\" in the body"
 					end if
 				end if
 
