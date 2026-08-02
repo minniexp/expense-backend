@@ -13,6 +13,9 @@ router.delete('/all', transactionController.deleteAllTransactions);
 router.post('/delete', requireAdvancedAccess, transactionController.deleteTransactions);
 router.put('/update-many', transactionController.updateTransactionsMany);
 router.post('/single', transactionController.createTransaction);
+// Hand-typed rows, through the same builder the alerts use. See the note on createManualTransaction
+// for why this exists alongside /single rather than replacing it.
+router.post('/manual', transactionController.createManualTransaction);
 router.post('/by-ids', transactionController.getTransactionsByIds);
 
 module.exports = router;

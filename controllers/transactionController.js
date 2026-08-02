@@ -4,6 +4,7 @@ const Return = require('../models/Return');
 const PendingTransactions = require('../models/PendingTransactions');
 const { planReturnUnlink } = require('../services/returnUnlink');
 const { sortNewestFirst } = require('../services/transactionSort');
+const { buildManualTransaction, parseCardLast4Map, isSameTransaction } = require('../services/manualTransaction');
 
 const getReturnIdForMonth = (year, month) => {
   const monthMap = {
@@ -268,6 +269,63 @@ exports.deleteAllTransactions = async (req, res) => {
     res.json({ message: 'All transactions deleted successfully' });
   } catch (err) {
     console.error('Error deleting transactions:', err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * POST /api/transactions/manual
+ *
+ * Type a transaction in by hand. Deliberately NOT the older /single route, which passes the request
+ * body to the model almost untouched: it never normalised the amount's sign, never set `source`,
+ * accepted whatever `userId` the browser sent — which is how seventy-five rows came to belong to
+ * "default-user" — and had no duplicate check at all.
+ *
+ * This runs the same builder the bank alerts do, so a hand-typed row and an ingested one are
+ * indistinguishable afterwards: same sign convention, same category and points derivation, same
+ * content-derived id.
+ */
+exports.createManualTransaction = async (req, res) => {
+  try {
+    const userId = (req.user && req.user.userId) || process.env.MINID;
+    if (!userId) return res.status(503).json({ message: 'Server is not configured for this request' });
+
+    let record;
+    try {
+      record = buildManualTransaction(req.body || {}, {
+        userId,
+        returnIdForMonth: getReturnIdForMonth,
+        source: 'manual',
+        cardLast4Map: parseCardLast4Map(process.env.CARD_LAST4_MAP),
+      });
+    } catch (e) {
+      // The sender's to fix, not a 500.
+      return res.status(400).json({ message: e.message });
+    }
+
+    // Somebody sat and typed this, so it has been reviewed by definition — unlike an alert, which
+    // arrives with a category guessed from the merchant and nobody having looked.
+    record.reviewed = true;
+
+    if (!req.body.allowDuplicate) {
+      const candidates = await Transaction.find({
+        date: record.date, amount: record.amount, transactionType: record.transactionType,
+      }).lean();
+      const existing = candidates.find((c) => isSameTransaction(record, c));
+      if (existing) {
+        return res.status(200).json({
+          message: 'That transaction is already logged.',
+          duplicate: true,
+          transaction: existing,
+        });
+      }
+    }
+
+    const saved = await Transaction.create(record);
+    console.log(`[POST /transactions/manual] created=1 source=manual`);
+    res.status(201).json({ message: 'Saved.', duplicate: false, transaction: saved });
+  } catch (err) {
+    console.error('Error creating manual transaction:', err);
     res.status(500).json({ message: err.message });
   }
 };
