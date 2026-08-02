@@ -9,7 +9,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { UNCATEGORISED, budgetCategoryOf, spendOf, summariseBudgets } = require('../services/budgetSummary');
+const { UNCATEGORISED, BUDGET_GROUPS, EXCLUDED, budgetCategoryOf, spendOf, summariseBudgets } = require('../services/budgetSummary');
 
 const spend = (month, amount, category, over = {}) => ({
   year: 2026, month, date: `2026-${String(month).padStart(2, '0')}-15`,
@@ -114,12 +114,14 @@ test('a transaction is charged to its main category, not its purchase-category t
   assert.strictEqual(result.totals.current, 90, 'the total equals what was spent');
 });
 
-test('spending with no category lands in "etc."', () => {
+test('spending with no category is kept out of the budget view entirely', () => {
+  // An allowance for "everything uncategorised" cannot be acted on; the fix is to categorise it.
   const result = summariseBudgets({
     transactions: [spend(3, 25, ''), spend(3, 5, null), spend(3, 10, '   ')],
     budgets: {}, year: 2026, month: 3,
   });
-  assert.strictEqual(find(result, UNCATEGORISED).current, 40);
+  assert.strictEqual(find(result, UNCATEGORISED), undefined);
+  assert.strictEqual(result.totals.current, 0, 'and it does not inflate the total either');
 });
 
 test('budgetCategoryOf never returns an empty name', () => {
@@ -142,11 +144,60 @@ test('a budgeted category with no spending still appears, showing its allowance'
   assert.strictEqual(bill.accumulated, 1000);
 });
 
-test('the "etc." placeholder is dropped when nothing is uncategorised', () => {
+test('MONEY LAID OUT FOR OTHERS IS NOT BUDGETED', () => {
+  // parents-monthly is reclaimed through a return and business is reimbursed. Counting either
+  // would report thousands of dollars of overspend that was never yours to spend.
   const result = summariseBudgets({
-    transactions: [spend(3, 10, 'personal')], budgets: { personal: 50 }, year: 2026, month: 3,
+    transactions: [
+      spend(3, 900, 'parents-monthly'),
+      spend(3, 400, 'parents-not monthly'),
+      spend(3, 250, 'business'),
+      spend(3, 10, 'personal'),
+    ],
+    budgets: { personal: 50 }, year: 2026, month: 3,
   });
-  assert.strictEqual(find(result, UNCATEGORISED), undefined);
+  assert.deepStrictEqual(result.categories.map((c) => c.category), ['personal']);
+  assert.strictEqual(result.totals.current, 10, 'only the personal spend counts');
+});
+
+test('an excluded category cannot be resurrected by budgeting for it', () => {
+  const result = summariseBudgets({
+    transactions: [], budgets: { business: 500, 'etc.': 100 }, year: 2026, month: 3,
+  });
+  assert.deepStrictEqual(result.categories, []);
+});
+
+// ---------------------------------------------------------------------------
+// categories that share one allowance
+// ---------------------------------------------------------------------------
+
+test('doctors, emergency and automobile draw from a single allowance', () => {
+  const result = summariseBudgets({
+    transactions: [spend(1, 120, 'doctors'), spend(2, 300, 'automobile'), spend(3, 80, 'emergency')],
+    budgets: { emergency: 350 }, year: 2026, month: 3,
+  });
+  const pot = find(result, 'emergency');
+  assert.strictEqual(pot.current, 80, 'only March');
+  assert.strictEqual(pot.yearToDate, 500, '120 + 300 + 80');
+  assert.strictEqual(pot.accumulated, 550, '3 x 350 - 500');
+  assert.strictEqual(find(result, 'doctors'), undefined, 'members do not appear separately');
+  assert.strictEqual(find(result, 'automobile'), undefined);
+});
+
+test('budgetCategoryOf resolves a grouped category to its allowance', () => {
+  assert.strictEqual(budgetCategoryOf({ category: 'doctors' }), 'emergency');
+  assert.strictEqual(budgetCategoryOf({ category: 'automobile' }), 'emergency');
+  assert.strictEqual(budgetCategoryOf({ category: 'emergency' }), 'emergency');
+  assert.strictEqual(budgetCategoryOf({ category: 'travel' }), 'travel', 'ungrouped is unchanged');
+});
+
+test('the group table and the exclusion list do not overlap', () => {
+  // A category that is both grouped and excluded would silently vanish from its own pot.
+  for (const members of Object.values(BUDGET_GROUPS)) {
+    for (const m of members) {
+      assert.ok(!EXCLUDED.has(m), `${m} is both grouped and excluded`);
+    }
+  }
 });
 
 test('categories come back ordered by what was spent this month', () => {

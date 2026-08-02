@@ -17,8 +17,36 @@
  * month's figure cannot show that; a running total is the only thing that does.
  */
 
-/** Spending with no category still has to appear somewhere. */
+/** Spending with no category at all. Not budgeted — see EXCLUDED below. */
 const UNCATEGORISED = 'etc.';
+
+/**
+ * Categories that share one allowance.
+ *
+ * Doctors, car trouble and outright emergencies are the same kind of money: rare, unplanned, and
+ * impossible to budget for individually because none of them happens on a schedule. Budgeting them
+ * separately means three lines that each look wildly over or wildly under every month, when what
+ * matters is whether the pot as a whole is holding.
+ */
+const BUDGET_GROUPS = {
+  emergency: ['emergency', 'doctors', 'automobile'],
+};
+
+/** member category -> the allowance it draws from */
+const GROUP_OF = new Map(
+  Object.entries(BUDGET_GROUPS).flatMap(([group, members]) => members.map((m) => [m, group]))
+);
+
+/**
+ * Categories kept out of the budget view entirely.
+ *
+ * These are not personal spending. `parents-monthly` and `parents-not monthly` are money laid out
+ * on someone else's behalf and reclaimed through a return; `business` is reimbursed elsewhere.
+ * Budgeting against them would report thousands of dollars of overspend that was never yours to
+ * spend. `etc.` is excluded because an allowance for "everything uncategorised" cannot be acted on
+ * — the fix for an uncategorised transaction is to categorise it.
+ */
+const EXCLUDED = new Set(['parents-monthly', 'parents-not monthly', 'business', UNCATEGORISED]);
 
 /**
  * Which budget a transaction draws from.
@@ -26,11 +54,12 @@ const UNCATEGORISED = 'etc.';
  * The main `category` field, not `purchaseCategory` — a transaction has exactly one of the former
  * and any number of the latter, so keying on it means nothing is ever double-counted, and a budget
  * of "travel" or "fuel" (which exist as a purchase-category tag too) unambiguously means the main
- * category, not the tag.
+ * category, not the tag. Grouped categories resolve to their shared allowance.
  */
 function budgetCategoryOf(transaction) {
   const category = transaction && typeof transaction.category === 'string' ? transaction.category.trim() : '';
-  return category || UNCATEGORISED;
+  if (!category) return UNCATEGORISED;
+  return GROUP_OF.get(category) || category;
 }
 
 /**
@@ -85,8 +114,10 @@ function summariseBudgets({ transactions = [], budgets = {}, year, month } = {})
   const names = new Set([
     ...Object.keys(budgets || {}),
     ...yearToDateByCategory.keys(),
-    UNCATEGORISED,
   ]);
+  // Removed from the totals as well as the list. A total that includes a line you cannot see does
+  // not add up on screen, which reads as a bug in the arithmetic rather than a deliberate omission.
+  EXCLUDED.forEach((name) => names.delete(name));
 
   const categories = [...names]
     .map((name) => {
@@ -103,8 +134,6 @@ function summariseBudgets({ transactions = [], budgets = {}, year, month } = {})
         accumulated: round2(targetMonth * monthlyBudget - yearToDate),
       };
     })
-    // Drop the placeholder when nothing is uncategorised and nothing budgets for it.
-    .filter((c) => !(c.category === UNCATEGORISED && c.yearToDate === 0 && c.budgeted === 0))
     .sort((a, b) => b.current - a.current || a.category.localeCompare(b.category));
 
   const totals = categories.reduce(
@@ -120,4 +149,4 @@ function summariseBudgets({ transactions = [], budgets = {}, year, month } = {})
   return { year: targetYear, month: targetMonth, totals, categories };
 }
 
-module.exports = { UNCATEGORISED, budgetCategoryOf, spendOf, summariseBudgets };
+module.exports = { UNCATEGORISED, BUDGET_GROUPS, EXCLUDED, budgetCategoryOf, spendOf, summariseBudgets };
