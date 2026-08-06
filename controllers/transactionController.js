@@ -297,6 +297,7 @@ exports.createManualTransaction = async (req, res) => {
         returnIdForMonth: getReturnIdForMonth,
         source: 'manual',
         cardLast4Map: parseCardLast4Map(process.env.CARD_LAST4_MAP),
+        cardCategoryMap: parseCardLast4Map(process.env.CARD_CATEGORY_MAP),
       });
     } catch (e) {
       // The sender's to fix, not a 500.

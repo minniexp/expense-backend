@@ -85,9 +85,10 @@ function resolveDescriptionRule(description) {
 }
 
 /**
- * Card last-four → canonical payment method, parsed from CARD_LAST4_MAP:
+ * A map keyed by a card's last four digits, parsed from a comma-separated env var:
  *
  *   CARD_LAST4_MAP="8923:Freedom Unlimited,1234:Freedom Flex"
+ *   CARD_CATEGORY_MAP="8016:parents-monthly"
  *
  * A bank alert email names the card by its last four digits and nothing else, so something has to
  * turn "8923" into an account this ledger recognises. Doing it here rather than in the sender keeps
@@ -228,6 +229,9 @@ function cleanDescription(value) {
 const INPUT_ALIASES = {
   Amount: 'amount',
   Merchant: 'description',
+  // A composed description rather than a raw merchant name — "Mom - JOONG BOO MARKET". Same field,
+  // but a sender that has already built the string should not have to call it Merchant.
+  Description: 'description',
   Last4: 'cardLast4',
   Time: 'time',
   Notes: 'notes',
@@ -392,6 +396,7 @@ function buildManualTransaction(input, options = {}) {
   const {
     userId, returnIdForMonth = () => null, ordinal = 0, source = 'phone',
     cardLast4Map = parseCardLast4Map(process.env.CARD_LAST4_MAP),
+    cardCategoryMap = parseCardLast4Map(process.env.CARD_CATEGORY_MAP),
   } = options;
   // Resolves the Shortcut's field names onto the ledger's, and turns "Jul 29, 2026" into an ISO
   // date, so everything below sees exactly one shape regardless of which spelling arrived.
@@ -433,6 +438,16 @@ function buildManualTransaction(input, options = {}) {
   const rule = resolveDescriptionRule(description);
   const sentLast4 = raw.cardLast4 !== undefined && raw.cardLast4 !== null && raw.cardLast4 !== '';
   const fromLast4 = sentLast4 ? resolveCardFromLast4(raw.cardLast4, cardLast4Map) : null;
+
+  // What the card implies beyond which account it is.
+  //
+  // A card belonging to someone else means every purchase on it is theirs, whatever was bought.
+  // The description classifier gets that right by accident for the shops they use often — a grocery
+  // run reads as parents-monthly wherever it came from — and wrong for everything else. Whose card
+  // it was is the fact that actually determines it, and the last four are what carry that fact.
+  const categoryFromCard = sentLast4
+    ? resolveCardFromLast4(raw.cardLast4, cardCategoryMap)
+    : null;
 
   // Reject an unrecognised card rather than quietly falling through to Cash. Falling through would
   // store the amount with the wrong sign — Cash treats a positive figure as money arriving, a credit
@@ -488,7 +503,7 @@ function buildManualTransaction(input, options = {}) {
   // picker was dismissed sends "" rather than omitting the field, and both mean the same thing.
   const supplied = typeof raw.category === 'string' ? raw.category.trim() : raw.category;
   const category = (supplied === undefined || supplied === null || supplied === '')
-    ? ((rule && rule.category) || determineCategory(forClassifier) || DEFAULT_CATEGORY)
+    ? ((rule && rule.category) || categoryFromCard || determineCategory(forClassifier) || DEFAULT_CATEGORY)
     : supplied;
 
   // A rule may pin points to zero, which the fallback below cannot express — `|| calculatePoints()`

@@ -118,6 +118,7 @@ exports.ingestTransactions = async (req, res) => {
     // one re-derives the whole record for the duplicate path, so options that differ between the two
     // would resolve a retried duplicate onto a different card than the original.
     const cardLast4Map = parseCardLast4Map(process.env.CARD_LAST4_MAP);
+    const cardCategoryMap = parseCardLast4Map(process.env.CARD_CATEGORY_MAP);
 
     for (const [index, item] of items.entries()) {
       let record;
@@ -127,6 +128,7 @@ exports.ingestTransactions = async (req, res) => {
           returnIdForMonth,
           source: 'phone',
           cardLast4Map,
+          cardCategoryMap,
         };
         const base = buildManualTransaction(item, buildOptions);
         const ordinal = await resolveOrdinal(

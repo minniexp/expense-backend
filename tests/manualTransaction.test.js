@@ -714,6 +714,76 @@ test('the label strip does not change the id for a correctly-sent merchant', () 
 });
 
 // ---------------------------------------------------------------------------
+// what a card implies beyond which account it is
+//
+// A card belonging to somebody else means every purchase on it is theirs. The description
+// classifier gets that right by accident for the shops they use often — a grocery run reads as
+// parents-monthly wherever it came from — and wrong for everything else.
+// ---------------------------------------------------------------------------
+
+const MOM_CARD = { 8016: 'Freedom Unlimited', 8923: 'Freedom Unlimited' };
+const MOM_CATEGORY = { 8016: 'parents-monthly' };
+const onCard = (input) => build(input, { cardLast4Map: MOM_CARD, cardCategoryMap: MOM_CATEGORY });
+
+test("THE MOM CARD: a purchase on 8016 is parents-monthly and owed back", () => {
+  const t = onCard({ Amount: 172.73, Description: 'Mom - JOONG BOO MARKET',
+                     Last4: '8016', TransactionType: 'expense', date: '2026-08-05' });
+  assert.strictEqual(t.paymentMethod, 'Freedom Unlimited');
+  assert.strictEqual(t.category, 'parents-monthly');
+  assert.strictEqual(t.points, 1.5, 'the Freedom Unlimited base rate');
+  assert.strictEqual(t.amount, 172.73, 'a credit-card charge stores positive');
+  assert.strictEqual(t.needToBePaidback, true);
+  assert.deepStrictEqual(t.purchaseCategory, ['groceries']);
+});
+
+test('THE CASE THE CLASSIFIER CANNOT SEE: a non-grocery purchase on the same card', () => {
+  // The description says nothing about whose card it was, so without the card rule this would be
+  // filed as ordinary personal spending and never reclaimed.
+  const t = onCard({ Amount: 40, Description: 'Mom - SHELL OIL',
+                     Last4: '8016', TransactionType: 'expense', date: '2026-08-05' });
+  assert.strictEqual(t.category, 'parents-monthly');
+  assert.strictEqual(t.needToBePaidback, true);
+});
+
+test('a card with no category rule is unaffected, even on the same account', () => {
+  // 8016 and 8923 are both Freedom Unlimited. Only one of them is Mom's.
+  const t = onCard({ Amount: 26.99, Merchant: 'NETFLIX.COM',
+                     Last4: '8923', TransactionType: 'expense', date: '2026-08-05' });
+  assert.strictEqual(t.paymentMethod, 'Freedom Unlimited');
+  assert.strictEqual(t.category, 'personal');
+  assert.strictEqual(t.needToBePaidback, false);
+});
+
+test('an explicit category still overrides what the card implies', () => {
+  const t = onCard({ Amount: 40, Description: 'Mom - SHELL OIL', Last4: '8016',
+                     TransactionType: 'expense', date: '2026-08-05', category: 'personal' });
+  assert.strictEqual(t.category, 'personal');
+});
+
+test('a description rule outranks the card, since it is the more specific statement', () => {
+  const t = onCard({ Amount: 500, Description: 'Direct Deposit - Payroll (UCC)', Last4: '8016',
+                     TransactionType: 'income', date: '2026-08-05' });
+  assert.strictEqual(t.category, 'payroll');
+});
+
+test('the card category drives the link to that month\'s return', () => {
+  const t = build(
+    { Amount: 40, Description: 'Mom - SHELL OIL', Last4: '8016', TransactionType: 'expense',
+      date: '2026-08-05' },
+    { cardLast4Map: MOM_CARD, cardCategoryMap: MOM_CATEGORY,
+      returnIdForMonth: (y, m) => `return_${y}_${m}` }
+  );
+  assert.strictEqual(t.returnId, 'return_2026_8');
+});
+
+test('Description is accepted as an alias, alongside Merchant', () => {
+  const a = onCard({ Amount: 10, Description: 'Mom - X', Last4: '8016', date: '2026-08-05' });
+  const b = onCard({ Amount: 10, Merchant: 'Mom - X', Last4: '8016', date: '2026-08-05' });
+  assert.strictEqual(a.description, 'Mom - X');
+  assert.strictEqual(a.tellerTransactionId, b.tellerTransactionId, 'and derives the same row');
+});
+
+// ---------------------------------------------------------------------------
 // duplicate detection
 //
 // The upsert alone was never going to create a second row, but it would $set over the top of an

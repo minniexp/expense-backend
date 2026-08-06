@@ -79,6 +79,15 @@ on dateLabelFor(theRoute)
 	return ""
 end dateLabelFor
 
+-- Routes dated when they are processed rather than when the transaction happened.
+--
+-- Mom's card is reconciled monthly against a return, so the day within the month is not what the
+-- figure turns on. Worth knowing: this is the one route where forwarding an old alert, or clearing
+-- a backlog, dates the row today rather than when the purchase was made.
+on usesTodaysDate(theRoute)
+	return theRoute is "mom card purchase"
+end usesTodaysDate
+
 property MONTH_ABBR : {"Jan", "Feb", "Mar", "Apr", "May", "Jun", ¬
 	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
 
@@ -229,6 +238,11 @@ end trimmed
 -- ---------------------------------------------------------------------------
 
 on routeFor(theSubject)
+	-- Checked BEFORE the plain card rule. Chase writes the cardholder's name in front of the same
+	-- "made a ... transaction" wording, so hers matches both and the more specific one must win.
+	if (theSubject contains "KIM,JUNG SIN made a") and (theSubject contains "transaction") then
+		return "mom card purchase"
+	end if
 	if (theSubject contains "You made a") and (theSubject contains "transaction") then
 		return "card purchase"
 	end if
@@ -251,6 +265,14 @@ end routeFor
 on fieldsFor(theRoute, theBody)
 	if theRoute is "card purchase" then
 		return {merchant:my requiredCapture(theBody, P_MERCHANT, "merchant"), ¬
+			last4:my requiredCapture(theBody, P_LAST4, "card last four"), ¬
+			txType:"expense"}
+
+	else if theRoute is "mom card purchase" then
+		-- The same body as any card alert; only whose card it was differs, and that is in the last
+		-- four. "Mom - " goes in front so the ledger reads at a glance, but it is decoration: the
+		-- server decides parents-monthly from card 8016, not from the words.
+		return {merchant:"Mom - " & (my requiredCapture(theBody, P_MERCHANT, "merchant")), ¬
 			last4:my requiredCapture(theBody, P_LAST4, "card last four"), ¬
 			txType:"expense"}
 
@@ -503,7 +525,10 @@ on processMessages(collected, interactive)
 				set theDateText to my chaseStyleDate(mReceived of entry)
 				set dateSource to "date received"
 				set theDateLabel to my dateLabelFor(theRoute)
-				if theDateLabel is not "" then
+				if my usesTodaysDate(theRoute) then
+					set theDateText to my chaseStyleDate(current date)
+					set dateSource to "today"
+				else if theDateLabel is not "" then
 					set stated to my regexCapture(mBody of entry, my datePatternFor(theDateLabel))
 					if stated is not missing value and stated is not "" then
 						set theDateText to stated
