@@ -16,12 +16,7 @@ const {
 
 const MAX_BATCH = 100;
 
-const monthEnvKeys = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-const returnIdForMonth = (year, month) => {
-  const key = monthEnvKeys[month - 1];
-  return key ? process.env[`${year}_${key}_RETURNID`] || null : null;
-};
+const { returnIdForMonth } = require('../services/returnLookup');
 
 /**
  * Find a free ordinal for a content-derived id.

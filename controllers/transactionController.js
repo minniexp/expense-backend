@@ -4,25 +4,10 @@ const Return = require('../models/Return');
 const PendingTransactions = require('../models/PendingTransactions');
 const { planReturnUnlink } = require('../services/returnUnlink');
 const { sortNewestFirst } = require('../services/transactionSort');
+const { returnIdForMonth } = require('../services/returnLookup');
 const { buildManualTransaction, parseCardLast4Map, isSameTransaction } = require('../services/manualTransaction');
 
-const getReturnIdForMonth = (year, month) => {
-  const monthMap = {
-    1: process.env[`${year}_JAN_RETURNID`],
-    2: process.env[`${year}_FEB_RETURNID`],
-    3: process.env[`${year}_MAR_RETURNID`],
-    4: process.env[`${year}_APR_RETURNID`],
-    5: process.env[`${year}_MAY_RETURNID`],
-    6: process.env[`${year}_JUN_RETURNID`],
-    7: process.env[`${year}_JUL_RETURNID`],
-    8: process.env[`${year}_AUG_RETURNID`],
-    9: process.env[`${year}_SEP_RETURNID`],
-    10: process.env[`${year}_OCT_RETURNID`],
-    11: process.env[`${year}_NOV_RETURNID`],
-    12: process.env[`${year}_DEC_RETURNID`]
-  };
-  return monthMap[month];
-};
+const getReturnIdForMonth = returnIdForMonth;
 
 exports.getTransactions = async (req, res) => {
   try {
